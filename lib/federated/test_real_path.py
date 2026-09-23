@@ -13,7 +13,7 @@ from lib.config.vipt.config import cfg, update_config_from_file
 from lib.models.vipt.ostrack_prompt import build_viptrack
 from lib.train.base_functions import update_settings
 from lib.federated.aggregator import make_initial_state
-from lib.federated.client import FederatedClient
+from lib.federated.client import FederatedClient, seed_everything
 from lib.federated.client_data import build_client_dataset
 from lib.federated.fed_wrapper import FedViPTWrapper
 from lib.federated.param_groups import FROZEN, TRAINABLE_GROUPS
@@ -26,6 +26,7 @@ DEVICE = "cuda" if PY else "cpu"
 SPLIT = DEFAULT_SPLIT
 
 def _setup():
+    seed_everything(42)
     update_config_from_file(os.path.join(REPO, "experiments/vipt/repro_rgbt.yaml"))
     cfg.TRAIN.BATCH_SIZE = 4
     cfg.TRAIN.NUM_WORKER = 0
@@ -57,6 +58,9 @@ def _run(cid, steps=2):
     update, _ = client.local_train(net, state.view_for(client.aux_type), plan, 0,
                                    steps, device=DEVICE)
     for h in hooks: h.remove()
+    if os.environ.get("SAVE_UPLOAD"):
+        torch.save({k: v.cpu() for k, v in update.state.items()},
+                   os.environ["SAVE_UPLOAD"])
     return net, wrapper, before, update, seen_bn, by_id
 
 def test_fix_bn_and_real_training():

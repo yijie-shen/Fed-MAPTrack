@@ -42,6 +42,8 @@ import os
 import random
 import sys
 import time
+import subprocess
+from datetime import datetime, timezone
 from collections import OrderedDict
 
 import torch
@@ -85,7 +87,8 @@ class FederatedServer:
     def __init__(self, net, clients, cfg, settings, variant="ours",
                  num_rounds=120, clients_per_round=None, local_steps=50,
                  seed=42, out_dir=None, device="cuda", verbose=True,
-                 modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None):
+                 modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None,
+                 split_path=None):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -104,6 +107,10 @@ class FederatedServer:
         self.out_dir = out_dir or os.path.join(
             _REPO, "output", "fed", "%s_seed%d" % (variant, seed))
         os.makedirs(self.out_dir, exist_ok=True)
+        if os.path.exists(os.path.join(self.out_dir, "round_metrics.jsonl")) or \
+           any(n.startswith("fed_state_") for n in os.listdir(self.out_dir)):
+            raise RuntimeError("refusing to reuse non-empty federated output directory")
+        self.run_id = "%s-%d-%d" % (variant, seed, int(time.time() * 1000))
 
         self.param_groups = build_param_groups(net.state_dict().keys())
         self.frozen_reference = OrderedDict(
@@ -134,6 +141,39 @@ class FederatedServer:
                                      modality_alpha=self.modality_alpha,
                                      missing_client_weight=self.rgb_only_weight)
         self.log_path = os.path.join(self.out_dir, "round_metrics.jsonl")
+        self.param_stats_path = os.path.join(self.out_dir, "param_group_stats.jsonl")
+        try:
+            git_hash = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                               cwd=_REPO, text=True).strip()
+        except Exception:
+            git_hash = "unknown"
+        train_cfg = getattr(cfg, "TRAIN", None)
+        actual_cfg = {k: getattr(train_cfg, k, None) for k in
+                      ("BATCH_SIZE", "ACCUM_ITER", "LR", "WEIGHT_DECAY", "FIX_BN", "GRAD_CLIP_NORM")}
+        actual_cfg["ACCUM_ITER"] = getattr(settings, "accum_iter", actual_cfg["ACCUM_ITER"])
+        try:
+            git_clean = not bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=_REPO, text=True).strip())
+        except Exception:
+            git_clean = False
+        gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+        capability = list(torch.cuda.get_device_capability(0)) if torch.cuda.is_available() else None
+        split_doc = {}
+        if split_path and os.path.isfile(split_path):
+            with open(split_path, encoding="utf-8") as sf:
+                split_doc = json.load(sf)
+        with open(os.path.join(self.out_dir, "run_config.json"), "w", encoding="utf-8") as f:
+            json.dump({"run_id": self.run_id, "variant": variant, "seed": seed,
+                       "local_steps": self.local_steps, "modality_alpha": self.modality_alpha,
+                       "rgb_only_weight": self.rgb_only_weight, "prox_mu": self.prox_mu,
+                       "git_hash": git_hash, "git_clean": git_clean,
+                       "python": sys.version, "torch": torch.__version__,
+                       "cuda": torch.version.cuda, "cudnn": torch.backends.cudnn.version(),
+                       "gpu": gpu, "compute_capability": capability,
+                       "cfg_train": actual_cfg, "split_path": split_path,
+                       "fingerprint": split_doc.get("fingerprint"),
+                       "weights_fingerprint": split_doc.get("weights_fingerprint"),
+                       "started_at": datetime.now(timezone.utc).isoformat(),
+                       "phase_table": self.scheduler.describe()}, f, ensure_ascii=False, indent=2)
 
     # ------------------------------------------------------------- selection
 
@@ -205,6 +245,7 @@ class FederatedServer:
             self.state, agg_stats = self.aggregator.aggregate(
                 self.state, updates, round_idx=round_idx, phase=plan)
             agg_summary = agg_stats.group_summary()
+            self._last_agg_stats = agg_stats
 
         record = OrderedDict(plan.as_dict())
         # The scheduler only selects parameter groups. Loss weights come from
@@ -236,6 +277,9 @@ class FederatedServer:
         record["clients"] = client_stats
         if agg_summary is not None:
             record["aggregation"] = _jsonable(agg_summary)
+            with open(self.param_stats_path, "a", encoding="utf-8") as f:
+                for st in self._last_agg_stats.per_key:
+                    f.write(json.dumps(_jsonable(st.__dict__), ensure_ascii=False) + "\n")
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return record
@@ -261,6 +305,7 @@ class FederatedServer:
         path = os.path.join(self.out_dir, "fed_state_r%04d.pt" % round_idx)
         blob = {"round": round_idx, "variant": self.variant,
                 "seed": self.seed,
+                "run_id": self.run_id,
                 "state": self.state.to_flat_dict()}
         if self.local_states is not None:
             # 2026-09-20: `local` never updates self.state, so persisting only
@@ -417,6 +462,7 @@ def main(argv=None):
         modality_alpha=args.modality_alpha,
         rgb_only_weight=args.rgb_only_weight,
         prox_mu=args.prox_mu,
+        split_path=args.split,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,
         out_dir=args.out_dir or None, device=args.device)

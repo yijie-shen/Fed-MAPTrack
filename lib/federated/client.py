@@ -264,6 +264,7 @@ class FederatedClient:
         n_aux_present = 0
         n_samples_seen = 0
         optimizer.zero_grad()
+        optimizer_steps = 0
 
         for i, data in enumerate(loader, 1):
             data = data.to(device)
@@ -293,6 +294,7 @@ class FederatedClient:
                     torch.nn.utils.clip_grad_norm_(trainable,
                                                    self.settings.grad_clip_norm)
                 optimizer.step()
+                optimizer_steps += 1
                 optimizer.zero_grad()
 
             for k, v in status.items():
@@ -332,6 +334,9 @@ class FederatedClient:
             uploaded_keys=len(state),
             masked_false=sum(1 for v in param_mask.values() if not v),
             aux_present_frac=(n_aux_present / n_samples_seen) if n_samples_seen else 0.0,
+            optimizer_steps=optimizer_steps,
+            learning_rate=float(optimizer.param_groups[0]["lr"]),
+            accum=accum, batch_size=int(self.cfg.TRAIN.BATCH_SIZE),
         )
         for k, v in totals.items():
             stats["mean_" + k] = v / max(n_batches, 1)
