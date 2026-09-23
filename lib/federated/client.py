@@ -223,14 +223,15 @@ class FederatedClient:
         for name, p in net.named_parameters():
             g = wrapper.param_groups.get(name)
             if g in TRAINABLE_GROUPS and g in open_groups:
+                if self.aux_type == NO_AUX and g == "aux_specific":
+                    p.requires_grad_(False)
+                    continue
                 p.requires_grad_(True)
                 n_open += 1
             else:
                 p.requires_grad_(False)
         if n_open == 0:
-            raise RuntimeError(
-                "round %d phase %r opened no parameters on %s; check the warm-up "
-                "phase table" % (round_idx, plan.phase_name, self.client_id))
+            return self._empty_update(wrapper, plan, round_idx)
 
         # 3. optimizer over the open tensors only
         trainable = [p for p in net.parameters() if p.requires_grad]
@@ -250,6 +251,8 @@ class FederatedClient:
         actor = ViPTActor(net=net, objective=objective, loss_weight=loss_weight,
                           settings=self.settings, cfg=self.cfg)
         net.train()
+        if getattr(self.settings, "fix_bn", False):
+            actor.fix_bns()
 
         loader = self._build_loader(local_steps, seed)
         accum = max(1, int(getattr(self.settings, "accum_iter", 1)))
@@ -323,6 +326,16 @@ class FederatedClient:
         for k, v in totals.items():
             stats["mean_" + k] = v / max(n_batches, 1)
         return update, stats
+
+    def _empty_update(self, wrapper, plan, round_idx):
+        """Return a no-op update for a phase with no usable RGB-only groups."""
+        state = OrderedDict()
+        mask = wrapper.param_mask_for(self.aux_type, aux_present=False)
+        return ClientUpdate(self.client_id, self.num_samples, self.aux_type,
+                            state, OrderedDict(), 1.0), OrderedDict(
+                                client_id=self.client_id, round=round_idx,
+                                phase=plan.phase_name, batches=0,
+                                skipped="no trainable parameters for client")
 
     def __repr__(self):
         return ("FederatedClient(%s, %s, aux=%s, seqs=%d, samples=%d)"
