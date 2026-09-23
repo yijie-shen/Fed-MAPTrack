@@ -31,11 +31,13 @@ import torch
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, REPO)
 
-from lib.federated.aggregator import ClientUpdate, GlobalState, NO_AUX  # noqa: E402
+from lib.federated.aggregator import (ClientUpdate, GlobalState, NO_AUX,
+                                      Aggregator)  # noqa: E402
 from lib.federated.param_groups import (  # noqa: E402
     AUX_SPECIFIC, FROZEN, FUSION, NORM, RGB_SHARED, build_param_groups,
 )
 from lib.federated.server import VARIANTS, FederatedServer, _jsonable  # noqa: E402
+from lib.federated.warmup import Phase
 
 # Real ViPT key names, one per group, plus two frozen ones.
 KEYS = OrderedDict([
@@ -514,6 +516,36 @@ def test_jsonable_survives_tensors_sets_and_nesting():
     json.dumps(out)                       # must not raise
     assert out["c"] == [1, 2.5, None]
     assert sorted(out["b"]) == ["x", "y"]
+
+
+def test_rgb_only_weight_half_matches_legacy_phase_weight():
+    clients = [StubClient("rgb", NO_AUX, 200, 9.0),
+               StubClient("thermal", "thermal", 100, 1.0)]
+    s, _ = _server("fedavg", clients=clients, rgb_only_weight=0.5)
+    plan = s.scheduler.resolve(0)
+    updates = [c.local_train(s.net, s.state.view_for(c.aux_type), plan, 0, 3)[0]
+               for c in clients]
+    legacy = Phase("old", 0, 1, trainable_groups=plan.trainable_groups,
+                   downweight_missing_aux=True, missing_client_weight=0.5)
+    a, _ = Aggregator(s.param_groups, modality_aware=False).aggregate(
+        s.state, updates, phase=legacy)
+    b, _ = Aggregator(s.param_groups, modality_aware=False,
+                      missing_client_weight=0.5).aggregate(s.state, updates,
+                                                           phase=plan)
+    for k in a.shared:
+        assert torch.equal(a.shared[k], b.shared[k]), k
+
+
+def test_log_loss_weights_are_the_objective_weights():
+    from types import SimpleNamespace
+    from lib.federated.client import _build_objective
+    c = SimpleNamespace(TRAIN=SimpleNamespace(GIOU_WEIGHT=3.0, L1_WEIGHT=7.0))
+    _, weights = _build_objective(c)
+    s, _ = _server("fedavg")
+    s.cfg = c
+    rec = s.run_round(0)
+    assert rec["loss_weights"] == {"giou": weights["giou"],
+                                    "l1": weights["l1"], "focal": weights["focal"]}
 
 
 def main():
