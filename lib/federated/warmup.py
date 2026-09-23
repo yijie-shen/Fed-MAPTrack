@@ -231,32 +231,29 @@ def default_phases(num_rounds: int = 120) -> List[Phase]:
             name="rgb_common", start_round=0, end_round=r1,
             trainable_groups=(RGB_SHARED, NORM),
             modality_aware=False,           # nothing modality-specific is open
-            loss_weights={"track": 1.0, "aux": 0.0, "consistency": 0.0, "calib": 0.0},
-            note="only the half of the prompt that reads RGB; every client agrees here",
+            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
+            note="shared parameters first train; this is parameter-group warm-up, not RGB-only input",
         ),
         Phase(
             name="adapter_warmup", start_round=r1, end_round=r2,
             trainable_groups=(RGB_SHARED, NORM, AUX_SPECIFIC),
             modality_aware=True,            # aux tensors stay in their own bank
-            loss_weights={"track": 1.0, "aux": "linear(0.0, 0.5)",
-                          "consistency": 0.0, "calib": 0.0},
+            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="each sensor learns its own mapping, never averaged across modalities",
         ),
         Phase(
             name="fusion_calib", start_round=r2, end_round=r3,
             trainable_groups=(RGB_SHARED, NORM, AUX_SPECIFIC, FUSION),
             modality_aware=True,
-            loss_weights={"track": 1.0, "aux": 0.5,
-                          "consistency": "linear(0.0, 1.0)", "calib": 0.05},
+            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="open the fusion projection and start pulling distributions together",
         ),
         Phase(
             name="full", start_round=r3, end_round=num_rounds,
             trainable_groups=ALL_GROUPS,
             modality_aware=True,
-            loss_weights={"track": 1.0, "aux": 1.0, "consistency": 1.0, "calib": 0.05},
-            downweight_missing_aux=True, missing_client_weight=0.5,
-            note="main method",
+            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
+            note="main method; no implicit RGB-only client downweight",
         ),
     ]
 
@@ -300,13 +297,16 @@ class WarmupScheduler:
         return cls([Phase(
             name="no_warmup", start_round=0, end_round=num_rounds,
             trainable_groups=ALL_GROUPS, modality_aware=modality_aware,
-            loss_weights={"track": 1.0, "aux": 1.0, "consistency": 1.0, "calib": 0.05},
+            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="ablation: progressive warm-up disabled",
         )])
 
     @classmethod
     def from_config(cls, conf, num_rounds: Optional[int] = None):
-        """Build from spec 8.1's yaml shape.
+        """Parse a phase table, for inspection only; the server uses code phases.
+
+        Consistency/calibration/auxiliary losses are not implemented. A config
+        that requests any non-zero value for them therefore fails loudly.
 
         warmup:
           phases:
@@ -329,6 +329,10 @@ class WarmupScheduler:
             # spec 8.1 uses the flat key aux_loss_weight; accept both.
             if "aux_loss_weight" in p:
                 weights["aux"] = p["aux_loss_weight"]
+            for name in ("aux", "consistency", "calib"):
+                value = weights.get(name, 0.0)
+                if isinstance(value, str) or float(value) != 0.0:
+                    raise ValueError("unimplemented loss %r requested" % name)
             weights.setdefault("track", 1.0)
             phases.append(Phase(
                 name=p.get("name", f"phase{i}"),

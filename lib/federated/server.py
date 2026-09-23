@@ -60,7 +60,7 @@ from lib.federated.warmup import WarmupScheduler  # noqa: E402
 
 DEFAULT_SPLIT = os.path.join(
     _REPO, "configs", "fed", "client_splits",
-    "lasher_depthtrack_visevent_seed42.json")
+    "lasher_depthtrack_visevent_seed42_v2.json")
 
 #: variant -> (modality_aware, use_warmup, aggregate)
 #
@@ -84,7 +84,7 @@ class FederatedServer:
     def __init__(self, net, clients, cfg, settings, variant="ours",
                  num_rounds=120, clients_per_round=None, local_steps=50,
                  seed=42, out_dir=None, device="cuda", verbose=True,
-                 modality_alpha=1.0):
+                 modality_alpha=1.0, rgb_only_weight=1.0):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -122,9 +122,13 @@ class FederatedServer:
                           else WarmupScheduler.no_warmup(
                               num_rounds, modality_aware=self.modality_aware))
         self.modality_alpha = float(modality_alpha)
+        self.rgb_only_weight = float(rgb_only_weight)
+        if self.rgb_only_weight <= 0:
+            raise ValueError("rgb_only_weight must be positive")
         self.aggregator = Aggregator(self.param_groups,
                                      modality_aware=self.modality_aware,
-                                     modality_alpha=self.modality_alpha)
+                                     modality_alpha=self.modality_alpha,
+                                     missing_client_weight=self.rgb_only_weight)
         self.log_path = os.path.join(self.out_dir, "round_metrics.jsonl")
 
     # ------------------------------------------------------------- selection
@@ -210,6 +214,7 @@ class FederatedServer:
                                     if self.do_aggregate else False)
         record["phase_modality_aware"] = plan.modality_aware
         record["modality_alpha"] = self.modality_alpha
+        record["rgb_only_weight"] = self.rgb_only_weight
         record["variant"] = self.variant
         record["seed"] = self.seed
         record["selected"] = chosen
@@ -360,6 +365,7 @@ def main(argv=None):
                         "adapter, in between = a blend. No effect without "
                         "modality awareness.")
     p.add_argument("--split", default=DEFAULT_SPLIT)
+    p.add_argument("--rgb-only-weight", type=float, default=1.0)
     p.add_argument("--config", default="repro_rgbt")
     p.add_argument("--rounds", type=int, default=120)
     p.add_argument("--local-steps", type=int, default=50)
@@ -391,6 +397,7 @@ def main(argv=None):
     server = FederatedServer(
         net, clients, cfg, settings, variant=args.variant,
         modality_alpha=args.modality_alpha,
+        rgb_only_weight=args.rgb_only_weight,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,
         out_dir=args.out_dir or None, device=args.device)
