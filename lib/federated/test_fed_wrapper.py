@@ -58,6 +58,22 @@ def test_modality_mask_shape_matches_spec_3_1():
     assert m == {"rgb": 1, "thermal": 1, "depth": 0, "event": 0}, m
     m = FedViPTWrapper.build_modality_mask("none", False)
     assert m == {"rgb": 1, "thermal": 0, "depth": 0, "event": 0}, m
+
+
+def test_explicit_modality_mask_changes_tensor_seen_by_network():
+    class Recorder(torch.nn.Module):
+        def __init__(self):
+            super().__init__(); self.seen = []
+        def forward(self, template, search, **kwargs):
+            self.seen.append((template.detach().clone(), search.detach().clone()))
+            return {"pred_boxes": torch.zeros(template.shape[0], 4),
+                    "score_map": torch.zeros(1), "size_map": torch.zeros(1),
+                    "offset_map": torch.zeros(1)}
+    net = Recorder(); w = FedViPTWrapper(net)
+    rgb = torch.ones(1, 3, 2, 2); aux = torch.full_like(rgb, 7)
+    w(rgb, rgb, aux, aux, aux_type="thermal",
+      modality_mask={"rgb": 1, "thermal": 0, "depth": 0, "event": 0})
+    assert torch.equal(net.seen[0][0][:, 3:], torch.zeros_like(aux))
     # aux_type set but the tensors were absent -> still all zeros
     m = FedViPTWrapper.build_modality_mask("depth", False)
     assert m == {"rgb": 1, "thermal": 0, "depth": 0, "event": 0}, m

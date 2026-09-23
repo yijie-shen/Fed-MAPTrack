@@ -203,6 +203,14 @@ class FederatedServer:
             agg_summary = agg_stats.group_summary()
 
         record = OrderedDict(plan.as_dict())
+        # The scheduler only selects parameter groups. Loss weights come from
+        # the same objective factory used by clients, so the log cannot drift.
+        train_cfg = getattr(self.cfg, "TRAIN", None)
+        record["loss_weights"] = {
+            "giou": float(getattr(train_cfg, "GIOU_WEIGHT", 2.0)),
+            "l1": float(getattr(train_cfg, "L1_WEIGHT", 5.0)),
+            "focal": 1.0,
+        }
         # 2026-09-21: the log must carry what the aggregator DID, not what the
         # phase asked for. `plan.as_dict()` reports the phase's wish, and the
         # variant is the ceiling -- for `fedavg_warm` the two are opposite in

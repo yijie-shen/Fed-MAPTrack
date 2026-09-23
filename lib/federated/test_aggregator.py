@@ -454,6 +454,15 @@ def test_flat_dict_roundtrip():
     assert torch.allclose(back.per_modality["thermal"][AUX_KEY], torch.full((2, 2), 4.0))
 
 
+def test_flat_dict_roundtrip_preserves_initial_aux_separately():
+    st = _initial(aux_types=("thermal",))
+    back = GlobalState.from_flat_dict(st.to_flat_dict())
+    assert set(back.initial_aux) == set(st.initial_aux)
+    assert "__initial_aux__" not in back.per_modality
+    assert all(torch.equal(back.initial_aux[k], st.initial_aux[k])
+               for k in st.initial_aux)
+
+
 def test_input_state_is_not_mutated():
     """aggregate() must be pure; the caller may still need round N-1."""
     prev = _initial(aux_types=("thermal",))

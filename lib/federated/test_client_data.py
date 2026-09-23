@@ -32,7 +32,7 @@ from lib.federated.client_data import (  # noqa: E402
 
 FAST = os.environ.get("FED_DATA_FAST") == "1"
 SPLIT = os.path.join(REPO, "configs", "fed", "client_splits",
-                     "lasher_depthtrack_visevent_seed42.json")
+                     "lasher_depthtrack_visevent_seed42_v2.json")
 
 _CACHE = {}
 

@@ -333,7 +333,9 @@ class WarmupScheduler:
                 value = weights.get(name, 0.0)
                 if isinstance(value, str) or float(value) != 0.0:
                     raise ValueError("unimplemented loss %r requested" % name)
-            weights.setdefault("track", 1.0)
+            weights.setdefault("giou", 2.0)
+            weights.setdefault("l1", 5.0)
+            weights.setdefault("focal", 1.0)
             phases.append(Phase(
                 name=p.get("name", f"phase{i}"),
                 start_round=lo, end_round=hi,

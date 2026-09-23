@@ -137,7 +137,7 @@ def test_phase1_opens_only_the_rgb_half():
     assert FUSION not in plan.trainable_groups
     assert RGB_SHARED in plan.trainable_groups and NORM in plan.trainable_groups
     assert plan.modality_aware is False
-    assert plan.loss_weights["aux"] == 0.0
+    assert plan.loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
 
 
 def test_phase2_opens_aux_and_turns_on_modality_awareness():
@@ -150,14 +150,10 @@ def test_phase2_opens_aux_and_turns_on_modality_awareness():
     assert plan.modality_aware is True
 
 
-def test_aux_weight_ramps_up_inside_phase2():
+def test_no_unimplemented_aux_loss_weight_is_scheduled():
     sch = WarmupScheduler.default(120)
-    p = sch.phases[1]
-    first = sch.resolve(p.start_round).loss_weights["aux"]
-    last = sch.resolve(p.end_round - 1).loss_weights["aux"]
-    assert first == 0.0 and abs(last - 0.5) < 1e-9, (first, last)
-    mid = sch.resolve((p.start_round + p.end_round) // 2).loss_weights["aux"]
-    assert first < mid < last
+    for p in sch.phases:
+        assert set(p.loss_weights) == {"giou", "l1", "focal"}
 
 
 def test_final_phase_opens_everything():
@@ -204,20 +200,20 @@ def test_from_config_parses_spec_8_1_shape():
     conf = {"phases": [
         {"name": "rgb_common", "rounds": [0, 20],
          "trainable": ["rgb_shared", "norm"], "modality_aware": False,
-         "aux_loss_weight": 0.0},
+         "loss_weights": {"giou": 2.0, "l1": 5.0, "focal": 1.0}},
         {"name": "adapter_warmup", "rounds": "[20, 50)",
          "trainable": ["rgb_shared", "norm", "aux_specific"],
-         "aux_loss_weight": "linear(0.0, 0.5)"},
+         "loss_weights": {"giou": 2.0, "l1": 5.0, "focal": 1.0}},
         {"name": "full", "rounds": [50, 120], "trainable": list(TRAINABLE_GROUPS),
-         "aux_loss_weight": 1.0, "downweight_missing_aux": True,
+         "loss_weights": {"giou": 2.0, "l1": 5.0, "focal": 1.0}, "downweight_missing_aux": False,
          "missing_client_weight": 0.5},
     ]}
     sch = WarmupScheduler.from_config(conf)
     assert sch.num_rounds == 120
-    assert sch.resolve(0).loss_weights["aux"] == 0.0
-    assert abs(sch.resolve(49).loss_weights["aux"] - 0.5) < 1e-9
+    assert sch.resolve(0).loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
+    assert sch.resolve(49).loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
     last = sch.resolve(119)
-    assert last.downweight_missing_aux is True
+    assert last.downweight_missing_aux is False
     assert last.missing_client_weight == 0.5
 
 

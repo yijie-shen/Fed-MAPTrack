@@ -126,6 +126,8 @@ class GlobalState:
     def to_flat_dict(self) -> Dict[str, "Tensor"]:
         """Flatten for torch.save. Modality banks are namespaced '@<aux>/<key>'."""
         flat = OrderedDict(self.shared)
+        for k, v in self.initial_aux.items():
+            flat[f"@__initial_aux__/{k}"] = v
         for aux, bank in self.per_modality.items():
             for k, v in bank.items():
                 flat[f"@{aux}/{k}"] = v
@@ -137,10 +139,15 @@ class GlobalState:
         for k, v in flat.items():
             if k.startswith("@") and "/" in k:
                 aux, real = k[1:].split("/", 1)
+                if aux == "__initial_aux__":
+                    continue
                 per_mod.setdefault(aux, OrderedDict())[real] = v
             else:
                 shared[k] = v
-        return cls(shared=shared, per_modality=per_mod)
+        initial = OrderedDict((k[1:].split("/", 1)[1], v)
+                              for k, v in flat.items()
+                              if k.startswith("@__initial_aux__/"))
+        return cls(shared=shared, per_modality=per_mod, initial_aux=initial)
 
 
 @dataclass
