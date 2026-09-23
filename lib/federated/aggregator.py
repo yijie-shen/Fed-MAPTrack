@@ -102,11 +102,15 @@ class GlobalState:
     """Server-side model state, split by how it may be averaged."""
     shared: Dict[str, "Tensor"] = field(default_factory=OrderedDict)
     per_modality: Dict[str, Dict[str, "Tensor"]] = field(default_factory=dict)
+    initial_aux: Dict[str, "Tensor"] = field(default_factory=OrderedDict)
 
     def view_for(self, aux_type: str) -> Dict[str, "Tensor"]:
         """Exactly what gets dispatched to a client holding `aux_type`."""
         out = OrderedDict(self.shared)
         out.update(self.per_modality.get(aux_type, {}))
+        if aux_type == NO_AUX:
+            for k, v in self.initial_aux.items():
+                out[k] = _clone(v)
         return out
 
     def ensure_modality(self, aux_type: str, template: Dict[str, "Tensor"]):
@@ -271,6 +275,7 @@ class Aggregator:
                 aux: OrderedDict((k, _clone(v)) for k, v in bank.items())
                 for aux, bank in state.per_modality.items()
             },
+            initial_aux=OrderedDict((k, _clone(v)) for k, v in state.initial_aux.items()),
         )
         stats = AggregationStats(round_idx=round_idx)
 
@@ -463,4 +468,6 @@ def make_initial_state(model_state, param_groups=None, aux_types=()):
     # Keep a copy in `shared` too, so a non-modality-aware (FedAvg) run and the
     # "first time we see this sensor" path both have something to start from.
     shared.update(aux_template)
-    return GlobalState(shared=shared, per_modality=per_modality)
+    return GlobalState(shared=shared, per_modality=per_modality,
+                       initial_aux=OrderedDict((k, _clone(v))
+                                               for k, v in aux_template.items()))

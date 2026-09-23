@@ -169,6 +169,14 @@ class FedViPTWrapper(nn.Module):
         )
         if modality_mask is None:
             modality_mask = self.build_modality_mask(aux_type, aux_present)
+        else:
+            if not isinstance(modality_mask, dict):
+                raise ValueError("modality_mask must be a dict")
+            if any(k not in ("rgb", *KNOWN_AUX) for k in modality_mask):
+                raise ValueError("unsupported modality_mask key")
+            requested = bool(modality_mask.get(aux_type, 0))
+            aux_present = aux_present and requested
+            modality_mask = self.build_modality_mask(aux_type, aux_present)
 
         z = self._assemble(template_rgb, template_aux, aux_present)
         x = self._assemble(search_rgb, search_aux, aux_present)
@@ -235,11 +243,8 @@ class FedViPTWrapper(nn.Module):
         """Which trainable keys this client may legitimately upload.
 
         AUX_SPECIFIC tensors of a client with no auxiliary sensor are marked
-        False. They still receive gradients during local training (conv0_1's
-        bias sees the zero-filled channels), but those values describe nothing
-        real, and rule R2/R3 in the aggregator must skip them rather than
-        average them in. This is the concrete mechanism behind spec 16's
-        "RGB-only client 不会写入任何辅助 adapter".
+        False and are frozen locally; the server also dispatches their initial
+        pretrained values to such clients.
         """
         valid = bool(aux_present) and aux_type != NO_AUX
         return OrderedDict(
