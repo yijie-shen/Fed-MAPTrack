@@ -97,6 +97,8 @@ DATASETS = OrderedDict(
     ),
 )
 
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
+
 
 # ---------------------------------------------------------------- io helpers
 
@@ -107,7 +109,7 @@ def read_sequence_list(path):
 
 
 def count_frames(seq_dir, anno_name):
-    """Number of annotated frames = number of non-empty lines in the annotation.
+    """Number of frames for which both modalities and annotation exist.
 
     Returns 0 if the file is missing, and the caller decides what to do; we do
     NOT silently invent a count, because num_samples drives aggregation weights.
@@ -120,7 +122,18 @@ def count_frames(seq_dir, anno_name):
         for line in f:
             if line.strip():
                 n += 1
-    return n
+    if anno_name == "visible.txt":
+        dirs = ("visible", "infrared")
+    elif os.path.isdir(os.path.join(seq_dir, "color")):
+        dirs = ("color", "depth")
+    elif os.path.isdir(os.path.join(seq_dir, "vis_imgs")):
+        dirs = ("vis_imgs", "event_imgs")
+    else:
+        return n
+    available = [sum(os.path.splitext(x)[1].lower() in _IMAGE_EXTS
+                     for x in os.listdir(os.path.join(seq_dir, d)))
+                 if os.path.isdir(os.path.join(seq_dir, d)) else 0 for d in dirs]
+    return min([n] + available)
 
 
 def load_pool(name, cfg, cache=None, verbose=True):

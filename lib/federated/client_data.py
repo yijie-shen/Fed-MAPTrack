@@ -48,7 +48,7 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from lib.federated.split_builder import DATASETS  # noqa: E402
+from lib.federated.split_builder import DATASETS, count_frames  # noqa: E402
 
 #: dataset name -> (class path, the dtype the OFFICIAL trainer uses)
 #: These dtypes are copied from lib/train/base_functions.py:36-47. Changing one
@@ -142,6 +142,20 @@ def build_client_dataset(client, root=None, verbose=False):
     dataset = build_dataset(name, root=root)
     n_before = len(dataset.sequence_list)
     restrict_to_sequences(dataset, names, dataset_name=name)
+
+    # Official dataset classes derive annotation length from the text file and
+    # the failsafe image loader otherwise silently accepts missing tail frames.
+    # Clamp the annotation arrays to the common RGB/auxiliary image prefix.
+    limits = {}
+    cfg = DATASETS[name]
+    for idx, seq_name in enumerate(dataset.sequence_list):
+        limits[idx] = count_frames(os.path.join(cfg["root"], seq_name), cfg["anno"])
+    original_info = dataset.get_sequence_info
+    def bounded_info(seq_id, _orig=original_info, _limits=limits):
+        info = _orig(seq_id)
+        n = _limits.get(seq_id, len(next(iter(info.values()))))
+        return {k: v[:n] for k, v in info.items()}
+    dataset.get_sequence_info = bounded_info
 
     if verbose:
         print("  %-12s %-11s %d of %d sequences (%d frames declared)"
