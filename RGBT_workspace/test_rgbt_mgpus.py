@@ -147,6 +147,10 @@ if __name__ == '__main__':
     parser.add_argument('--mode', default='parallel', type=str, help='sequential or parallel')
     parser.add_argument('--debug', default=0, type=int, help='to vis tracking results')
     parser.add_argument('--video', default='', type=str, help='specific video name')
+    # 2026-09-17 added: override the dataset root from the command line instead
+    # of editing the file for every machine.
+    parser.add_argument('--seq_home', default='', type=str,
+                        help='dataset root; overrides the built-in path')
     args = parser.parse_args()
 
     yaml_name = args.yaml_name
@@ -162,7 +166,11 @@ if __name__ == '__main__':
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'LasHeR':
-        seq_home = '/media/jiawen/Datasets/Tracking/DATASET/LasHeR/testingset'
+        # 2026-09-17: was '/media/jiawen/Datasets/Tracking/DATASET/LasHeR/testingset'
+        # (the author's machine). The official README tells users to modify
+        # <DATASET_PATH> here, so this is the intended edit point.
+        # --seq_home overrides it without touching the file again.
+        seq_home = args.seq_home or r'D:\cvresearch\data\lasher\testingset'
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'VTUAVST':

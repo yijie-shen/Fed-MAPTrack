@@ -88,17 +88,45 @@ class LTRTrainer(BaseTrainer):
                     loss, stats = self.actor(data)
 
             # backward pass and update weights
+            #
+            # 2026-09-17: added gradient accumulation (settings.accum_iter, default 1).
+            # With accum_iter == 1 this block is byte-for-byte equivalent in behaviour
+            # to the original: zero_grad -> backward -> clip -> step, once per batch.
+            #
+            # Why: the paper trains on 2 GPUs x BATCH_SIZE 32 = effective batch 64.
+            # A single 16 GB card tops out at 32 (measured peak 8.5 GB). Accumulating
+            # 2 micro-batches recovers effective 64 at the same total compute cost.
+            #
+            # Three things that must be right or the "effective batch" is a lie:
+            #   1. loss is divided by accum_iter, so the accumulated gradient is the
+            #      MEAN over the effective batch -- not accum_iter times too large
+            #      (which would silently scale the learning rate).
+            #   2. zero_grad() runs AFTER step(), not before backward(), otherwise
+            #      each backward wipes what the previous one accumulated.
+            #   3. grad clipping happens once, on the accumulated gradient, right
+            #      before step() -- clipping every micro-batch is a different method.
+            # Plus: the tail group (when iterations aren't divisible by accum_iter)
+            # still gets a step, so no batch's gradient is silently dropped.
             if loader.training:
-                self.optimizer.zero_grad()
+                accum = getattr(self.settings, 'accum_iter', 1)
+                is_step = (i % accum == 0) or (i == loader.__len__())
                 if not self.use_amp:
-                    loss.backward()
-                    if self.settings.grad_clip_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
-                    self.optimizer.step()
+                    (loss / accum).backward()
+                    if is_step:
+                        if self.settings.grad_clip_norm > 0:
+                            torch.nn.utils.clip_grad_norm_(self.actor.net.parameters(), self.settings.grad_clip_norm)
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
                 else:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                    # NOTE: the original AMP path never clipped gradients. Keeping that
+                    # as-is so AMP semantics don't change; we only add accumulation.
+                    # If AMP is ever turned on WITH clipping, scaler.unscale_() must be
+                    # called before clip_grad_norm_.
+                    self.scaler.scale(loss / accum).backward()
+                    if is_step:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                        self.optimizer.zero_grad()
 
             # update statistics
             batch_size = data['template_images'].shape[loader.stack_dim]

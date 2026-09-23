@@ -8,7 +8,13 @@ from lib.train.data.processing_utils import sample_target
 # for debug
 import cv2
 import os
-import vot
+# 2026-09-17: commented out. `vot` is never referenced anywhere in this file --
+# it is a leftover debug import -- but it blocks the whole RGB-T evaluation path,
+# which does not use the VOT toolkit at all (VOT is only for DepthTrack /
+# VOT22-RGBD). Installing vot-toolkit just to satisfy it would pull in 14
+# packages (PyLaTeX, jsonschema, ...). The authors commented out the same import
+# themselves in lib/test/vot/vipt_class.py:9.
+# import vot
 from lib.test.tracker.data_utils import PreprocessorMM
 from lib.utils.box_ops import clip_box
 from lib.utils.ce_utils import generate_mask_cond

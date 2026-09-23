@@ -24,6 +24,7 @@ def update_settings(settings, cfg):
     settings.batchsize = cfg.TRAIN.BATCH_SIZE
     settings.scheduler_type = cfg.TRAIN.SCHEDULER.TYPE
     settings.fix_bn = getattr(cfg.TRAIN, "FIX_BN", False) # add for fixing base model bn layer
+    settings.accum_iter = max(1, int(getattr(cfg.TRAIN, "ACCUM_ITER", 1)))  # gradient accumulation, 1 = off
 
 
 def names2datasets(name_list: list, settings, image_loader):

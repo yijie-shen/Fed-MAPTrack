@@ -1,0 +1,14 @@
+output/
+tensorboard/
+pretrained/
+RGBT_workspace/results/
+RGBE_workspace/results/
+Depthtrack_workspace/results/
+VOT22RGBD_workspace/results/
+__pycache__/
+*.pyc
+*.pth
+*.pth.tar
+*.npz
+*.log
+*.orig

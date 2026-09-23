@@ -52,6 +52,12 @@ cfg.TRAIN.PRINT_INTERVAL = 50
 cfg.TRAIN.VAL_EPOCH_INTERVAL = 20
 cfg.TRAIN.GRAD_CLIP_NORM = 0.1
 cfg.TRAIN.AMP = False
+# Gradient accumulation: accumulate this many micro-batches before one optimizer
+# step, so effective batch = BATCH_SIZE * ACCUM_ITER * num_gpus.
+# 1 = accumulate nothing = exactly the official behaviour. Added 2026-09-17
+# because the paper used 2 GPUs x 32 = effective 64, and a single 16 GB card
+# can only hold 32 (measured peak 8.5 GB at 32).
+cfg.TRAIN.ACCUM_ITER = 1
 ## TRAIN save cfgs
 cfg.TRAIN.FIX_BN = True
 cfg.TRAIN.SAVE_EPOCH_INTERVAL = 1 # 1 means save model each epoch

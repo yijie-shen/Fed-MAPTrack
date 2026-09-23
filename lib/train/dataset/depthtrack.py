@@ -46,7 +46,8 @@ class DepthTrack(BaseVideoDataset):
 
         ltr_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), '..')
         file_path = os.path.join(ltr_path, 'data_specs', 'depthtrack_%s.txt'%self.split)
-        sequence_list = pandas.read_csv(file_path, header=None, squeeze=True).values.tolist()
+        # pandas 2.0 移除了 read_csv 的 squeeze 参数,改用 .squeeze("columns")
+        sequence_list = pandas.read_csv(file_path, header=None).squeeze("columns").values.tolist()
         return sequence_list
 
     def _build_class_list(self):
