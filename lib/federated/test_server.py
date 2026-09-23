@@ -548,6 +548,37 @@ def test_log_loss_weights_are_the_objective_weights():
                                     "l1": weights["l1"], "focal": weights["focal"]}
 
 
+def test_alpha_zero_system_endpoint_with_missing_modality_and_export():
+    class MissingThermal(StubClient):
+        def local_train(self, net, dispatched, plan, round_idx, local_steps,
+                        device="cpu"):
+            update, stats = super().local_train(net, dispatched, plan, round_idx,
+                                                local_steps, device)
+            if round_idx == 1 and self.aux_type == "thermal":
+                for k in list(update.param_mask):
+                    if "prompt" in k and ("patch_embed_prompt" in k or "conv0_1" in k):
+                        update.param_mask[k] = False
+            return update, stats
+
+    def clients():
+        return [MissingThermal("rgb", NO_AUX, 100, 9.0),
+                MissingThermal("thermal", "thermal", 100, 1.0),
+                MissingThermal("depth", "depth", 100, 3.0)]
+    mod, _ = _server("modality", clients=clients(), modality_alpha=0.0,
+                      num_rounds=2)
+    fed, _ = _server("fedavg", clients=clients(), num_rounds=2)
+    mod.run_round(0); fed.run_round(0)
+    for k in mod.state.view_for("thermal"):
+        assert torch.equal(mod.state.view_for("thermal")[k],
+                           fed.state.view_for("thermal")[k]), k
+    mod.run_round(1); fed.run_round(1)
+    thermal_key = next(iter(mod.state.per_modality["thermal"]))
+    assert not torch.equal(mod.state.per_modality["thermal"][thermal_key],
+                           fed.state.shared[thermal_key])
+    paths = mod.export_checkpoint(2)
+    assert paths and all(os.path.isfile(p) for p in paths)
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

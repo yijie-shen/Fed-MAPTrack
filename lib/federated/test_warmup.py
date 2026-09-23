@@ -137,7 +137,7 @@ def test_phase1_opens_only_the_rgb_half():
     assert FUSION not in plan.trainable_groups
     assert RGB_SHARED in plan.trainable_groups and NORM in plan.trainable_groups
     assert plan.modality_aware is False
-    assert plan.loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
+    assert plan.loss_weights == {}
 
 
 def test_phase2_opens_aux_and_turns_on_modality_awareness():
@@ -153,7 +153,7 @@ def test_phase2_opens_aux_and_turns_on_modality_awareness():
 def test_no_unimplemented_aux_loss_weight_is_scheduled():
     sch = WarmupScheduler.default(120)
     for p in sch.phases:
-        assert set(p.loss_weights) == {"giou", "l1", "focal"}
+        assert p.loss_weights == {}
 
 
 def test_final_phase_opens_everything():
@@ -210,8 +210,8 @@ def test_from_config_parses_spec_8_1_shape():
     ]}
     sch = WarmupScheduler.from_config(conf)
     assert sch.num_rounds == 120
-    assert sch.resolve(0).loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
-    assert sch.resolve(49).loss_weights == {"giou": 2.0, "l1": 5.0, "focal": 1.0}
+    assert sch.resolve(0).loss_weights == {}
+    assert sch.resolve(49).loss_weights == {}
     last = sch.resolve(119)
     assert last.downweight_missing_aux is False
     assert last.missing_client_weight == 0.5
@@ -259,7 +259,7 @@ def test_round_plan_serialises_everything_needed_for_logging():
     d = WarmupScheduler.default(120).resolve(25).as_dict()
     for k in ("round", "phase", "trainable", "frozen", "modality_aware", "loss_weights"):
         assert k in d, k
-    assert isinstance(d["loss_weights"], dict) and d["loss_weights"]
+    assert d["loss_weights"] == {}
 
 
 def test_describe_lists_every_phase():

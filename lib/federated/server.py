@@ -77,6 +77,7 @@ VARIANTS = OrderedDict(
     fedavg_warm=(False, True, True),
     modality=(True, False, True),
     ours=(True, True, True),
+    fedprox=(False, False, True),
 )
 
 
@@ -84,7 +85,7 @@ class FederatedServer:
     def __init__(self, net, clients, cfg, settings, variant="ours",
                  num_rounds=120, clients_per_round=None, local_steps=50,
                  seed=42, out_dir=None, device="cuda", verbose=True,
-                 modality_alpha=1.0, rgb_only_weight=1.0):
+                 modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -123,6 +124,9 @@ class FederatedServer:
                               num_rounds, modality_aware=self.modality_aware))
         self.modality_alpha = float(modality_alpha)
         self.rgb_only_weight = float(rgb_only_weight)
+        self.prox_mu = (0.01 if prox_mu is None else float(prox_mu)) if variant == "fedprox" else 0.0
+        if variant != "fedprox" and prox_mu not in (None, 0, 0.0):
+            raise ValueError("prox_mu is only valid with fedprox")
         if self.rgb_only_weight <= 0:
             raise ValueError("rgb_only_weight must be positive")
         self.aggregator = Aggregator(self.param_groups,
@@ -223,6 +227,7 @@ class FederatedServer:
         record["phase_modality_aware"] = plan.modality_aware
         record["modality_alpha"] = self.modality_alpha
         record["rgb_only_weight"] = self.rgb_only_weight
+        record["prox_mu"] = self.prox_mu
         record["variant"] = self.variant
         record["seed"] = self.seed
         record["selected"] = chosen
@@ -357,7 +362,9 @@ def build_everything(args):
 
     _, by_id = load_split(args.split)
     wanted = args.clients.split(",") if args.clients else list(by_id)
+    prox_mu = args.prox_mu if args.prox_mu is not None else (0.01 if args.variant == "fedprox" else 0.0)
     clients = [FederatedClient(by_id[cid], cfg, settings, base_seed=args.seed,
+                               prox_mu=prox_mu,
                                verbose=False)
                for cid in wanted]
     return net, clients, cfg, settings
@@ -374,6 +381,7 @@ def main(argv=None):
                         "modality awareness.")
     p.add_argument("--split", default=DEFAULT_SPLIT)
     p.add_argument("--rgb-only-weight", type=float, default=1.0)
+    p.add_argument("--prox-mu", type=float, default=None)
     p.add_argument("--config", default="repro_rgbt")
     p.add_argument("--rounds", type=int, default=120)
     p.add_argument("--local-steps", type=int, default=50)
@@ -389,6 +397,8 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true",
                    help="print the round plan and the selection, train nothing")
     args = p.parse_args(argv)
+    if args.prox_mu is not None and args.variant != "fedprox":
+        raise ValueError("--prox-mu is only valid with --variant fedprox")
 
     if args.dry_run:
         _, by_id = load_split(args.split)
@@ -406,6 +416,7 @@ def main(argv=None):
         net, clients, cfg, settings, variant=args.variant,
         modality_alpha=args.modality_alpha,
         rgb_only_weight=args.rgb_only_weight,
+        prox_mu=args.prox_mu,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,
         out_dir=args.out_dir or None, device=args.device)

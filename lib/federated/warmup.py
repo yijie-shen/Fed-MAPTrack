@@ -231,28 +231,24 @@ def default_phases(num_rounds: int = 120) -> List[Phase]:
             name="rgb_common", start_round=0, end_round=r1,
             trainable_groups=(RGB_SHARED, NORM),
             modality_aware=False,           # nothing modality-specific is open
-            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="shared parameters first train; this is parameter-group warm-up, not RGB-only input",
         ),
         Phase(
             name="adapter_warmup", start_round=r1, end_round=r2,
             trainable_groups=(RGB_SHARED, NORM, AUX_SPECIFIC),
             modality_aware=True,            # aux tensors stay in their own bank
-            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="each sensor learns its own mapping, never averaged across modalities",
         ),
         Phase(
             name="fusion_calib", start_round=r2, end_round=r3,
             trainable_groups=(RGB_SHARED, NORM, AUX_SPECIFIC, FUSION),
             modality_aware=True,
-            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="open the fusion projection and start pulling distributions together",
         ),
         Phase(
             name="full", start_round=r3, end_round=num_rounds,
             trainable_groups=ALL_GROUPS,
             modality_aware=True,
-            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="main method; no implicit RGB-only client downweight",
         ),
     ]
@@ -297,7 +293,6 @@ class WarmupScheduler:
         return cls([Phase(
             name="no_warmup", start_round=0, end_round=num_rounds,
             trainable_groups=ALL_GROUPS, modality_aware=modality_aware,
-            loss_weights={"giou": 2.0, "l1": 5.0, "focal": 1.0},
             note="ablation: progressive warm-up disabled",
         )])
 
@@ -377,7 +372,7 @@ class WarmupScheduler:
             trainable_groups=p.trainable_groups,
             frozen_groups=tuple(g for g in ALL_GROUPS if g not in p.trainable_groups),
             modality_aware=p.modality_aware,
-            loss_weights={k: s.at(prog) for k, s in p.loss_weights.items()},
+            loss_weights={},
             downweight_missing_aux=p.downweight_missing_aux,
             missing_client_weight=p.missing_client_weight,
             clients_per_round=p.clients_per_round,
@@ -389,7 +384,7 @@ class WarmupScheduler:
         lines = [f"{'phase':<16}{'rounds':<14}{'trainable':<44}"
                  f"{'mod_aware':<11}loss weights"]
         for p in self.phases:
-            w = " ".join(f"{k}={v!r}" for k, v in sorted(p.loss_weights.items()))
+            w = "(client objective)"
             lines.append(
                 f"{p.name:<16}[{p.start_round},{p.end_round})".ljust(30)
                 + f"{'+'.join(p.trainable_groups):<44}"

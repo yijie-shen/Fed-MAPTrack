@@ -1,3 +1,4 @@
+import os
 from lib.test.evaluation.environment import EnvSettings
 
 def local_env_settings():
@@ -8,8 +9,10 @@ def local_env_settings():
     # what the official README tells users to edit, so this is configuration,
     # not a code change.
 
-    settings.prj_dir = r'D:\cvresearch\ViPT'
-    settings.save_dir = r'D:\cvresearch\ViPT\output'
+    root = os.environ.get('CVR_ROOT', r'D:\cvresearch')
+    workspace = os.path.join(root, 'ViPT')
+    settings.prj_dir = workspace
+    settings.save_dir = os.path.join(workspace, 'output')
     settings.network_path = r'D:\cvresearch\ViPT\output\test\networks'          # Where tracking networks are stored.
     settings.results_path = r'D:\cvresearch\ViPT\output\test\tracking_results'  # Where to store tracking results
     settings.result_plot_path = r'D:\cvresearch\ViPT\output\test\result_plots'

@@ -69,7 +69,8 @@ from collections import OrderedDict
 from datetime import datetime
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DATA = r"D:\cvresearch\data"
+CVR_ROOT = os.environ.get("CVR_ROOT", r"D:\cvresearch")
+DATA = os.environ.get("CVR_DATA", os.path.join(CVR_ROOT, "data"))
 SPECS = os.path.join(REPO, "lib", "train", "data_specs")
 
 NO_AUX = "none"

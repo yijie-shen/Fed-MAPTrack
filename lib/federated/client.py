@@ -101,7 +101,8 @@ class FederatedClient:
     """
 
     def __init__(self, client_cfg, cfg, settings, base_seed: int = 42,
-                 optimizer_state: str = "reset", verbose: bool = False):
+                 optimizer_state: str = "reset", verbose: bool = False,
+                 prox_mu: float = 0.0):
         if optimizer_state not in ("reset", "persist"):
             raise ValueError("optimizer_state must be 'reset' or 'persist'")
         self.cfg = cfg
@@ -109,6 +110,7 @@ class FederatedClient:
         self.base_seed = int(base_seed)
         self.optimizer_state = optimizer_state
         self.verbose = verbose
+        self.prox_mu = float(prox_mu)
 
         self.client_id = client_cfg["client_id"]
         self.dataset_name = client_cfg["dataset"]
@@ -278,6 +280,13 @@ class FederatedClient:
             n_samples_seen += bs
 
             loss, status = actor(data)
+            prox = torch.zeros((), device=loss.device)
+            if self.prox_mu:
+                for name, p in net.named_parameters():
+                    if p.requires_grad and name in dispatched_state:
+                        prox = prox + (p - dispatched_state[name].to(p)).pow(2).sum()
+                prox = 0.5 * self.prox_mu * prox
+                loss = loss + prox
             (loss / accum).backward()
             if (i % accum == 0) or (i == local_steps):
                 if self.settings.grad_clip_norm > 0:
@@ -288,6 +297,7 @@ class FederatedClient:
 
             for k, v in status.items():
                 totals[k] = totals.get(k, 0.0) + float(v)
+            totals["Loss/prox"] = totals.get("Loss/prox", 0.0) + float(prox.detach())
             n_batches += 1
 
         if self.optimizer_state == "persist":
