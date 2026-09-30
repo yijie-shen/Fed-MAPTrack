@@ -288,6 +288,25 @@ def test_R6_every_modality_is_dispatched_the_same_adapter():
         assert torch.equal(new.view_for(aux)[AUX_KEY], ref), aux
 
 
+def test_fedper_shared_reduction_matches_fedavg_when_private_aux_is_removed():
+    """FedPer hands aux_specific back to the server privately.  The ordinary
+    aggregator must therefore see exactly the same shared-provider inputs as
+    FedAvg, without ever receiving an auxiliary tensor to average."""
+    state = _initial(aux_types=("thermal", "depth"))
+    updates = [
+        ClientUpdate("t", 100, "thermal", _state(2, 1)),
+        ClientUpdate("d", 300, "depth", _state(6, 9)),
+    ]
+    fedavg, _ = Aggregator(_pg(), modality_aware=False).aggregate(state, updates)
+    stripped = [ClientUpdate(u.client_id, u.num_samples, u.aux_type,
+                             {RGB_KEY: u.state[RGB_KEY]}) for u in updates]
+    fedper, stats = Aggregator(_pg(), modality_aware=False).aggregate(state, stripped)
+    assert torch.equal(fedper.shared[RGB_KEY], fedavg.shared[RGB_KEY])
+    aux_stats = [s for s in stats.per_key if s.group == AUX_SPECIFIC]
+    assert aux_stats and all(s.n_contributors == 0 and s.kept_previous
+                             for s in aux_stats)
+
+
 def _alpha_setup():
     """Two thermal clients and one depth client, values picked so every blend
     below is an exact decimal.

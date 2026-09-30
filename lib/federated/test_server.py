@@ -122,6 +122,7 @@ def test_variant_table_matches_the_documented_baselines():
     assert VARIANTS["fedavg_warm"] == (False, True, True)
     assert VARIANTS["modality"] == (True, False, True)
     assert VARIANTS["ours"] == (True, True, True)
+    assert VARIANTS["fedper"] == (False, False, True)
 
 
 def test_unknown_variant_is_rejected():
@@ -319,6 +320,99 @@ def test_rgb_only_client_alone_writes_no_aux_specific():
         for k, v in bank.items():
             assert torch.equal(s.state.per_modality[aux][k], v), \
                 "RGB-only client wrote into %s/%s" % (aux, k)
+
+
+# ----------------------------------------------------------- FedPer (private aux)
+
+def test_fedper_keeps_same_modality_clients_private_not_averaged():
+    s, _ = _server("fedper", clients=[
+        StubClient("thermal_one", "thermal", 100, 1.0),
+        StubClient("thermal_two", "thermal", 300, 5.0),
+    ])
+    s.run_round(0)
+    aux = next(k for k, g in KEYS.items() if g == AUX_SPECIFIC)
+    assert torch.equal(s.fedper_aux_states["thermal_one"][aux], torch.full((2,), 1.0))
+    assert torch.equal(s.fedper_aux_states["thermal_two"][aux], torch.full((2,), 5.0))
+    assert not torch.equal(s.fedper_aux_states["thermal_one"][aux],
+                           s.fedper_aux_states["thermal_two"][aux])
+
+
+def test_fedper_shared_groups_are_bit_identical_to_fedavg():
+    clients_a = [StubClient("t", "thermal", 100, 1.0),
+                 StubClient("d", "depth", 300, 5.0),
+                 StubClient("r", NO_AUX, 200, 9.0)]
+    clients_b = [StubClient(c.client_id, c.aux_type, c.num_samples, c.value)
+                 for c in clients_a]
+    fedavg, _ = _server("fedavg", clients=clients_a)
+    fedper, _ = _server("fedper", clients=clients_b)
+    fedavg.run_round(0)
+    fedper.run_round(0)
+    for key, group in KEYS.items():
+        if group != AUX_SPECIFIC and group != FROZEN:
+            assert torch.equal(fedper.state.shared[key], fedavg.state.shared[key]), key
+
+
+def test_fedper_rgb_only_gets_initial_aux_and_cannot_create_private_state():
+    s, clients = _server("fedper", clients=[
+        StubClient("sensor", "thermal", 100, 3.0),
+        StubClient("rgb", NO_AUX, 100, 9.0),
+    ])
+    aux = next(k for k, g in KEYS.items() if g == AUX_SPECIFIC)
+    initial = s.state.initial_aux[aux].clone()
+    s.run_round(0)
+    assert "rgb" not in s.fedper_aux_states
+    dispatched = s._dispatch("rgb", clients[1], s.state)
+    assert torch.equal(dispatched[aux], initial)
+
+
+def test_fedper_equals_modality_with_one_sensor_client_per_modality():
+    spec = [StubClient("thermal", "thermal", 100, 1.0),
+            StubClient("depth", "depth", 300, 5.0),
+            StubClient("rgb", NO_AUX, 200, 9.0)]
+    fedper, _ = _server("fedper", clients=spec)
+    modality, _ = _server("modality", clients=[
+        StubClient(c.client_id, c.aux_type, c.num_samples, c.value) for c in spec])
+    fedper.run_round(0)
+    modality.run_round(0)
+    for key, group in KEYS.items():
+        if group not in (AUX_SPECIFIC, FROZEN):
+            assert torch.equal(fedper.state.shared[key], modality.state.shared[key]), key
+    for cid in ("thermal", "depth"):
+        for key, value in fedper.fedper_aux_states[cid].items():
+            assert torch.equal(value, modality.state.per_modality[cid][key]), (cid, key)
+
+
+def test_fedper_save_load_and_client_export_preserve_private_aux():
+    s, _ = _server("fedper", clients=[
+        StubClient("thermal_one", "thermal", 100, 1.0),
+        StubClient("thermal_two", "thermal", 100, 5.0),
+    ])
+    s.run_round(0)
+    saved = s.save_state(1)
+    restored, _ = _server("fedper", clients=[
+        StubClient("thermal_one", "thermal", 100, 1.0),
+        StubClient("thermal_two", "thermal", 100, 5.0),
+    ])
+    assert restored.load_state(saved) == 1
+    restored.run_round(1)
+    s.run_round(1)
+    for cid in s.fedper_aux_states:
+        for key, value in s.fedper_aux_states[cid].items():
+            assert torch.equal(value, restored.fedper_aux_states[cid][key]), (cid, key)
+    path = restored.export_checkpoint(2, client_id="thermal_two")[0]
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    assert set(checkpoint["net"]) == set(StubNet().state_dict())
+    aux = next(k for k, g in KEYS.items() if g == AUX_SPECIFIC)
+    assert torch.equal(checkpoint["net"][aux], torch.full((2,), 5.0))
+    assert checkpoint["fed"]["client_id"] == "thermal_two"
+
+
+def test_fedper_log_declares_aux_is_not_aggregated():
+    s, _ = _server("fedper")
+    s.run_round(0)
+    record = json.loads(open(s.log_path, encoding="utf-8").read())
+    assert record["aux_specific"]["aggregation"] == "private_per_client"
+    assert record["aux_specific"]["cross_client_aggregation"] is False
 
 
 # ----------------------------------------------------------- local (no merge)
