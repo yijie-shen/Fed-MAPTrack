@@ -65,11 +65,12 @@ class StubNet:
 class StubClient:
     """Uploads `value` for every open key, so aggregation is hand-checkable."""
 
-    def __init__(self, client_id, aux_type, num_samples, value):
+    def __init__(self, client_id, aux_type, num_samples, value, dataset_name="lasher"):
         self.client_id = client_id
         self.aux_type = aux_type
         self.num_samples = num_samples
         self.value = float(value)
+        self.dataset_name = dataset_name
         self.calls = []
 
     def local_train(self, net, dispatched, plan, round_idx, local_steps,
@@ -130,6 +131,68 @@ def test_unknown_variant_is_rejected():
     except ValueError:
         return
     raise AssertionError("an unknown variant was accepted")
+
+
+def test_bucket_groups_are_rejected_outside_modality_variant():
+    try:
+        _server("fedavg", bucket_groups=("aux_specific", "fusion"))
+    except ValueError:
+        return
+    raise AssertionError("fedavg accepted modality-only bucket groups")
+
+
+def test_bucketed_non_aux_groups_use_dataset_bucket_for_rgb_only_clients():
+    clients = [
+        StubClient("rgbt_sensor", "thermal", 100, 1),
+        StubClient("rgbt_rgb", NO_AUX, 300, 5, "lasher"),
+        StubClient("rgbd_sensor", "depth", 100, 9, "depthtrack"),
+        StubClient("rgbd_rgb", NO_AUX, 100, 13, "depthtrack"),
+    ]
+    s, _ = _server("modality", clients=clients,
+                   bucket_groups=("aux_specific", "fusion", "norm"))
+    s.run_round(0)
+    fusion = "backbone.prompt_blocks.0.conv1x1.weight"
+    norm = "backbone.prompt_norms.0.weight"
+    # thermal (1*100 + 5*300)/400 = 4; depth (9 + 13)/2 = 11
+    for key in (fusion, norm):
+        assert torch.equal(s.state.per_modality["thermal"][key], torch.full((2,), 4.0))
+        assert torch.equal(s.state.per_modality["depth"][key], torch.full((2,), 11.0))
+    rgb = "backbone.prompt_blocks.0.conv0_0.weight"
+    # (1*100 + 5*300 + 9*100 + 13*100) / 600
+    assert torch.allclose(s.state.shared[rgb], torch.full((2,), 3800.0 / 600.0))
+
+
+def test_default_bucket_groups_matches_explicit_legacy_default():
+    clients = [StubClient("t", "thermal", 100, 1),
+               StubClient("d", "depth", 300, 5)]
+    a, _ = _server("modality", clients=clients)
+    b, _ = _server("modality", clients=clients, bucket_groups=("aux_specific",))
+    a.run_round(0)
+    b.run_round(0)
+    for aux in a.state.per_modality:
+        for key in a.state.per_modality[aux]:
+            assert torch.equal(a.state.per_modality[aux][key], b.state.per_modality[aux][key])
+    for key in a.state.shared:
+        assert torch.equal(a.state.shared[key], b.state.shared[key])
+
+
+def test_bucketed_save_load_then_continue_is_bit_identical():
+    clients = [StubClient("t", "thermal", 100, 1),
+               StubClient("r", NO_AUX, 300, 5, "lasher"),
+               StubClient("d", "depth", 200, 9, "depthtrack")]
+    groups = ("aux_specific", "fusion", "norm")
+    uninterrupted, _ = _server("modality", clients=clients, bucket_groups=groups)
+    uninterrupted.run_round(0)
+    uninterrupted.run_round(1)
+    paused, _ = _server("modality", clients=clients, bucket_groups=groups)
+    paused.run_round(0)
+    checkpoint = paused.save_state(1)
+    resumed, _ = _server("modality", clients=clients, bucket_groups=groups)
+    assert resumed.load_state(checkpoint) == 1
+    resumed.run_round(1)
+    assert uninterrupted.state.to_flat_dict().keys() == resumed.state.to_flat_dict().keys()
+    for key, value in uninterrupted.state.to_flat_dict().items():
+        assert torch.equal(value, resumed.state.to_flat_dict()[key]), key
 
 
 def test_only_ours_uses_warmup():
