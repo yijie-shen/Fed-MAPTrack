@@ -80,6 +80,7 @@ VARIANTS = OrderedDict(
     modality=(True, False, True),
     ours=(True, True, True),
     fedprox=(False, False, True),
+    ditto=(False, False, True),
 )
 
 
@@ -88,7 +89,7 @@ class FederatedServer:
                  num_rounds=120, clients_per_round=None, local_steps=50,
                  seed=42, out_dir=None, device="cuda", verbose=True,
                  modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None,
-                 split_path=None):
+                 split_path=None, ditto_lambda=0.1):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -125,6 +126,13 @@ class FederatedServer:
             {cid: make_initial_state(net.state_dict(), self.param_groups,
                                      aux_types=self.aux_types)
              for cid in self.clients} if variant == "local" else None)
+        # Ditto has one complete private trainable state per sensor client.
+        # RGB-only clients have no personalized model by contract.
+        self.ditto_states = ({cid: make_initial_state(net.state_dict(), self.param_groups,
+                                                      aux_types=self.aux_types)
+                              for cid, c in self.clients.items()
+                              if c.aux_type != NO_AUX}
+                             if variant == "ditto" else None)
 
         self.scheduler = (WarmupScheduler.default(num_rounds) if self.use_warmup
                           else WarmupScheduler.no_warmup(
@@ -132,8 +140,11 @@ class FederatedServer:
         self.modality_alpha = float(modality_alpha)
         self.rgb_only_weight = float(rgb_only_weight)
         self.prox_mu = (0.01 if prox_mu is None else float(prox_mu)) if variant == "fedprox" else 0.0
+        self.ditto_lambda = float(ditto_lambda) if variant == "ditto" else 0.0
         if variant != "fedprox" and prox_mu not in (None, 0, 0.0):
             raise ValueError("prox_mu is only valid with fedprox")
+        if self.ditto_lambda < 0:
+            raise ValueError("ditto_lambda must be non-negative")
         if self.rgb_only_weight <= 0:
             raise ValueError("rgb_only_weight must be positive")
         self.aggregator = Aggregator(self.param_groups,
@@ -165,6 +176,7 @@ class FederatedServer:
             json.dump({"run_id": self.run_id, "variant": variant, "seed": seed,
                        "local_steps": self.local_steps, "modality_alpha": self.modality_alpha,
                        "rgb_only_weight": self.rgb_only_weight, "prox_mu": self.prox_mu,
+                       "ditto_lambda": self.ditto_lambda,
                        "git_hash": git_hash, "git_clean": git_clean,
                        "python": sys.version, "torch": torch.__version__,
                        "cuda": torch.version.cuda, "cudnn": torch.backends.cudnn.version(),
@@ -211,15 +223,24 @@ class FederatedServer:
             updates.append(update)
             client_stats.append(stats)
 
+            if self.ditto_states is not None and client.aux_type != NO_AUX:
+                # Anchor to the pre-aggregation global view for this round.
+                # This second call has an isolated seed stream.
+                private = self.ditto_states[cid]
+                private_view = private.view_for(client.aux_type)
+                anchor = self.state.view_for(client.aux_type)
+                personal_update, personal_stats = client.local_train(
+                    self.net, private_view, plan, round_idx,
+                    local_steps=self.local_steps, device=self.device,
+                    prox_mu=self.ditto_lambda, prox_anchor=anchor,
+                    seed_offset=0xD1770)
+                self._fold_update(private, client.aux_type, personal_update)
+                stats["ditto_personal"] = personal_stats
+
             if self.local_states is not None:
                 # no aggregation: fold this client's own result straight back
                 # into its private state, so next round it resumes from itself.
-                for k_, v in update.state.items():
-                    if k_ in src.shared:
-                        src.shared[k_] = v.detach().clone()
-                    bank = src.per_modality.get(client.aux_type)
-                    if bank is not None and k_ in bank:
-                        bank[k_] = v.detach().clone()
+                self._fold_update(src, client.aux_type, update)
             if self.verbose:
                 print("    %-11s loss %.4f  IoU %.4f  aux %.2f"
                       % (cid, stats.get("mean_Loss/total", float("nan")),
@@ -269,6 +290,7 @@ class FederatedServer:
         record["modality_alpha"] = self.modality_alpha
         record["rgb_only_weight"] = self.rgb_only_weight
         record["prox_mu"] = self.prox_mu
+        record["ditto_lambda"] = self.ditto_lambda
         record["variant"] = self.variant
         record["seed"] = self.seed
         record["selected"] = chosen
@@ -283,6 +305,16 @@ class FederatedServer:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return record
+
+    @staticmethod
+    def _fold_update(state, aux_type, update):
+        """Put a private client's absolute update back into its own state."""
+        for k_, v in update.state.items():
+            if k_ in state.shared:
+                state.shared[k_] = v.detach().clone()
+            bank = state.per_modality.get(aux_type)
+            if bank is not None and k_ in bank:
+                bank[k_] = v.detach().clone()
 
     def run(self, start=0, save_every=10):
         if self.verbose:
@@ -314,8 +346,33 @@ class FederatedServer:
                 cid: state.to_flat_dict()
                 for cid, state in self.local_states.items()
             }
+        if self.ditto_states is not None:
+            blob["ditto_states"] = {cid: state.to_flat_dict()
+                                    for cid, state in self.ditto_states.items()}
         torch.save(blob, path)
         return path
+
+    def load_state(self, path):
+        """Restore a checkpoint written by :meth:`save_state` and return round.
+
+        Private Ditto states are part of the resumable state, not evaluation-only
+        side files.  This keeps a resumed personal run bit-for-bit equivalent
+        to an uninterrupted one when client sampling is deterministic.
+        """
+        blob = torch.load(path, map_location="cpu", weights_only=False)
+        if blob.get("variant") != self.variant:
+            raise ValueError("checkpoint variant does not match this server")
+        self.state = GlobalState.from_flat_dict(blob["state"])
+        if self.local_states is not None:
+            self.local_states = {cid: GlobalState.from_flat_dict(flat)
+                                 for cid, flat in blob.get("local_states", {}).items()}
+        if self.ditto_states is not None:
+            restored = blob.get("ditto_states")
+            if restored is None:
+                raise ValueError("Ditto checkpoint has no private states")
+            self.ditto_states = {cid: GlobalState.from_flat_dict(flat)
+                                 for cid, flat in restored.items()}
+        return int(blob["round"])
 
     def export_checkpoint(self, round_idx, aux_type=None, out_dir=None,
                           client_id=None):
@@ -326,20 +383,21 @@ class FederatedServer:
         """
         out_dir = out_dir or os.path.join(self.out_dir, "checkpoints")
         os.makedirs(out_dir, exist_ok=True)
-        if self.local_states is not None:
+        if self.local_states is not None or self.ditto_states is not None:
+            private_states = self.local_states if self.local_states is not None else self.ditto_states
             if client_id is not None:
-                if client_id not in self.local_states:
+                if client_id not in private_states:
                     raise KeyError("unknown local client: %s" % client_id)
                 client_ids = [client_id]
             elif aux_type is not None:
                 client_ids = [cid for cid, client in self.clients.items()
-                              if client.aux_type == aux_type]
+                              if client.aux_type == aux_type and cid in private_states]
                 if not client_ids:
                     raise KeyError("no local client has aux_type: %s" % aux_type)
             else:
-                client_ids = list(self.clients)
+                client_ids = list(private_states)
             targets = [(cid, self.clients[cid].aux_type,
-                        self.local_states[cid]) for cid in client_ids]
+                        private_states[cid]) for cid in client_ids]
         else:
             aux_types = ([aux_type] if aux_type else
                          (list(self.aux_types) or [NO_AUX]))
@@ -427,6 +485,8 @@ def main(argv=None):
     p.add_argument("--split", default=DEFAULT_SPLIT)
     p.add_argument("--rgb-only-weight", type=float, default=1.0)
     p.add_argument("--prox-mu", type=float, default=None)
+    p.add_argument("--ditto-lambda", type=float, default=0.1,
+                   help="Ditto personalized-model proximal coefficient")
     p.add_argument("--config", default="repro_rgbt")
     p.add_argument("--rounds", type=int, default=120)
     p.add_argument("--local-steps", type=int, default=50)
@@ -444,6 +504,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     if args.prox_mu is not None and args.variant != "fedprox":
         raise ValueError("--prox-mu is only valid with --variant fedprox")
+    if args.variant != "ditto" and args.ditto_lambda != 0.1:
+        raise ValueError("--ditto-lambda is only valid with --variant ditto")
 
     if args.dry_run:
         _, by_id = load_split(args.split)
@@ -462,6 +524,7 @@ def main(argv=None):
         modality_alpha=args.modality_alpha,
         rgb_only_weight=args.rgb_only_weight,
         prox_mu=args.prox_mu,
+        ditto_lambda=args.ditto_lambda,
         split_path=args.split,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,

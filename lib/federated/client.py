@@ -204,13 +204,16 @@ class FederatedClient:
     # -------------------------------------------------------------- training
 
     def local_train(self, net, dispatched_state, plan, round_idx, local_steps,
-                    device="cuda"):
+                    device="cuda", prox_mu=None, prox_anchor=None,
+                    seed_offset=0):
         """Run this client's local steps and return what it uploads.
 
         `net` is the shared network; `dispatched_state` is
         `GlobalState.view_for(self.aux_type)`. Returns (ClientUpdate, stats).
         """
-        seed = derive_seed(self.base_seed, round_idx, self.client_id)
+        # A Ditto personal pass must not perturb FedAvg's reproducible stream.
+        # The default (zero) deliberately preserves every existing variant.
+        seed = derive_seed(self.base_seed, round_idx, self.client_id) + int(seed_offset)
         seed_everything(seed)
         rng = random.Random(seed ^ 0x5F3759DF)
 
@@ -282,11 +285,13 @@ class FederatedClient:
 
             loss, status = actor(data)
             prox = torch.zeros((), device=loss.device)
-            if self.prox_mu:
+            active_prox_mu = self.prox_mu if prox_mu is None else float(prox_mu)
+            anchor = dispatched_state if prox_anchor is None else prox_anchor
+            if active_prox_mu:
                 for name, p in net.named_parameters():
-                    if p.requires_grad and name in dispatched_state:
-                        prox = prox + (p - dispatched_state[name].to(p)).pow(2).sum()
-                prox = 0.5 * self.prox_mu * prox
+                    if p.requires_grad and name in anchor:
+                        prox = prox + (p - anchor[name].to(p)).pow(2).sum()
+                prox = 0.5 * active_prox_mu * prox
                 loss = loss + prox
             (loss / accum).backward()
             if (i % accum == 0) or (i == local_steps):

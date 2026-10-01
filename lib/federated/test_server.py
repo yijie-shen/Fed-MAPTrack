@@ -73,9 +73,9 @@ class StubClient:
         self.calls = []
 
     def local_train(self, net, dispatched, plan, round_idx, local_steps,
-                    device="cpu"):
+                    device="cpu", **kwargs):
         self.calls.append((round_idx, plan.phase_name, local_steps,
-                           len(dispatched)))
+                           len(dispatched), kwargs))
         groups = build_param_groups(net.state_dict().keys())
         open_groups = set(plan.trainable_groups)
         state = OrderedDict(
@@ -122,6 +122,7 @@ def test_variant_table_matches_the_documented_baselines():
     assert VARIANTS["fedavg_warm"] == (False, True, True)
     assert VARIANTS["modality"] == (True, False, True)
     assert VARIANTS["ours"] == (True, True, True)
+    assert VARIANTS["ditto"] == (False, False, True)
 
 
 def test_unknown_variant_is_rejected():
@@ -217,6 +218,91 @@ def test_only_local_skips_aggregation():
         s, _ = _server(variant)
         assert s.do_aggregate == (variant != "local"), variant
         assert (s.local_states is not None) == (variant == "local"), variant
+
+
+def test_ditto_global_aggregation_is_identical_to_fedavg():
+    fed, _ = _server("fedavg")
+    ditto, _ = _server("ditto")
+    fed.run_round(0); ditto.run_round(0)
+    for key in fed.state.shared:
+        assert torch.equal(fed.state.shared[key], ditto.state.shared[key]), key
+
+
+def test_ditto_private_states_are_sensor_only_and_independent():
+    s, _ = _server("ditto", clients=[
+        StubClient("a", "thermal", 100, 1.0),
+        StubClient("b", "thermal", 100, 5.0),
+        StubClient("rgb", NO_AUX, 100, 9.0)])
+    assert set(s.ditto_states) == {"a", "b"}
+    s.run_round(0)
+    key = next(k for k, g in KEYS.items() if g == RGB_SHARED)
+    assert s.ditto_states["a"].shared[key][0].item() == 1.0
+    assert s.ditto_states["b"].shared[key][0].item() == 5.0
+
+
+def test_ditto_personal_anchor_is_preaggregation_global_state():
+    class AnchorClient(StubClient):
+        def local_train(self, *args, **kwargs):
+            update, stats = super().local_train(*args, **kwargs)
+            if "prox_anchor" in kwargs:
+                stats["anchor_value"] = kwargs["prox_anchor"][next(iter(kwargs["prox_anchor"]))][0].item()
+            return update, stats
+    s, _ = _server("ditto", clients=[AnchorClient("a", "thermal", 100, 5.0)])
+    initial = next(iter(s.state.view_for("thermal").values()))[0].item()
+    s.run_round(0)
+    personal = json.loads(open(s.log_path, encoding="utf-8").read()) ["clients"][0]["ditto_personal"]
+    assert personal["anchor_value"] == initial
+    assert next(iter(s.state.shared.values()))[0].item() == 5.0
+
+
+def test_ditto_second_round_anchor_is_not_a_private_or_postmerge_state():
+    class AnchorClient(StubClient):
+        def local_train(self, *args, **kwargs):
+            update, stats = super().local_train(*args, **kwargs)
+            if "prox_anchor" in kwargs:
+                stats["anchor_value"] = kwargs["prox_anchor"][next(iter(kwargs["prox_anchor"]))][0].item()
+            return update, stats
+    s, _ = _server("ditto", clients=[AnchorClient("a", "thermal", 100, 1.0),
+                                       AnchorClient("b", "thermal", 100, 5.0)])
+    s.run_round(0)
+    # Before round 1, FedAvg is 3.0. Its post-merge value is also known to be
+    # 3.0 for this fixed stub, while each private state is 1.0 / 5.0; change
+    # the round-1 upload values to make the two global points distinct.
+    s.clients["a"].value, s.clients["b"].value = 7.0, 9.0
+    s.run_round(1)
+    record = json.loads(open(s.log_path, encoding="utf-8").read().splitlines()[1])
+    anchors = [x["ditto_personal"]["anchor_value"] for x in record["clients"]]
+    assert anchors == [3.0, 3.0], anchors
+    assert next(iter(s.state.shared.values()))[0].item() == 8.0
+
+
+def test_ditto_save_and_export_keep_personal_states():
+    s, _ = _server("ditto", clients=[StubClient("a", "thermal", 100, 3.0),
+                                       StubClient("rgb", NO_AUX, 100, 9.0)])
+    s.run_round(0)
+    blob = torch.load(s.save_state(1), map_location="cpu", weights_only=False)
+    assert set(blob["ditto_states"]) == {"a"}
+    path = s.export_checkpoint(1, client_id="a")[0]
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    assert set(ck["net"]) == set(StubNet().state_dict())
+    assert ck["fed"]["client_id"] == "a"
+
+
+def test_ditto_resume_restores_private_states_bit_for_bit():
+    clients = [StubClient("a", "thermal", 100, 3.0),
+               StubClient("b", "depth", 100, 7.0)]
+    uninterrupted, _ = _server("ditto", clients=clients, num_rounds=2)
+    uninterrupted.run_round(0); uninterrupted.run_round(1)
+    paused, _ = _server("ditto", clients=[StubClient("a", "thermal", 100, 3.0),
+                                            StubClient("b", "depth", 100, 7.0)], num_rounds=2)
+    paused.run_round(0)
+    resumed, _ = _server("ditto", clients=[StubClient("a", "thermal", 100, 3.0),
+                                             StubClient("b", "depth", 100, 7.0)], num_rounds=2)
+    assert resumed.load_state(paused.save_state(1)) == 1
+    resumed.run_round(1)
+    for cid in uninterrupted.ditto_states:
+        for key, value in uninterrupted.ditto_states[cid].to_flat_dict().items():
+            assert torch.equal(value, resumed.ditto_states[cid].to_flat_dict()[key]), (cid, key)
 
 
 # ------------------------------------------------------------------ selection
