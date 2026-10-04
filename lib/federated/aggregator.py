@@ -61,6 +61,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
 from .param_groups import (
+    AUX_SPECIFIC,
     TRAINABLE_GROUPS,
     build_param_groups,
     is_modality_sensitive,
@@ -231,6 +232,7 @@ class Aggregator:
         reliability_clamp=(0.2, 1.5),
         modality_alpha: float = 1.0,
         bucket_groups=("aux_specific",),
+        selective_participation: bool = False,
     ):
         if not 0.0 <= modality_alpha <= 1.0:
             raise ValueError(
@@ -243,6 +245,10 @@ class Aggregator:
         if unknown:
             raise ValueError("unknown bucket groups: %s" % sorted(unknown))
         self.modality_aware = modality_aware
+        # S-A: RGB-only clients still RECEIVE their dataset's bucket (view_for
+        # is unchanged) but are not candidates when a non-aux_specific bucketed
+        # group (fusion / norm) is aggregated. Default off = legacy behaviour.
+        self.selective_participation = bool(selective_participation)
         self.modality_alpha = float(modality_alpha)
         self.use_reliability_weight = use_reliability_weight
         self.missing_client_weight = float(missing_client_weight)
@@ -336,11 +342,18 @@ class Aggregator:
                     )
                 matched = [u for u in updates if self._bucket_of(u) == aux]
                 for key in aux_keys:
+                    key_matched = matched
+                    excluded = [u for u in updates if self._bucket_of(u) != aux]
+                    if (self.selective_participation
+                            and self.param_groups[key] != AUX_SPECIFIC):
+                        key_matched = [u for u in matched if u.aux_type != NO_AUX]
+                        excluded = excluded + [
+                            u for u in matched if u.aux_type == NO_AUX]
                     wrote = self._reduce_into(
                         target=new_state.per_modality[aux], key=key, bank_name=aux,
-                        candidates=matched, stats=stats, phase=phase,
+                        candidates=key_matched, stats=stats, phase=phase,
                         previous=state.per_modality.get(aux, {}).get(key),
-                        excluded=[u for u in updates if self._bucket_of(u) != aux],
+                        excluded=excluded,
                     )
                     # ---- partial sharing (2026-09-21) -------------------
                     # alpha = 1 is full isolation (what R2 describes and what

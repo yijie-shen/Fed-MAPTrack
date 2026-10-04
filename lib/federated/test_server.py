@@ -162,6 +162,68 @@ def test_bucketed_non_aux_groups_use_dataset_bucket_for_rgb_only_clients():
     assert torch.allclose(s.state.shared[rgb], torch.full((2,), 3800.0 / 600.0))
 
 
+def _sa_clients():
+    return [
+        StubClient("rgbt_sensor", "thermal", 100, 1),
+        StubClient("rgbt_rgb", NO_AUX, 300, 5, "lasher"),
+        StubClient("rgbd_sensor", "depth", 100, 9, "depthtrack"),
+        StubClient("rgbd_rgb", NO_AUX, 100, 13, "depthtrack"),
+    ]
+
+
+def test_selective_participation_excludes_rgb_only_from_bucketed_non_aux_groups():
+    s, _ = _server("modality", clients=_sa_clients(),
+                   bucket_groups=("aux_specific", "fusion", "norm"),
+                   selective_participation=True)
+    s.run_round(0)
+    fusion = "backbone.prompt_blocks.0.conv1x1.weight"
+    norm = "backbone.prompt_norms.0.weight"
+    # buckets hold only sensor clients: thermal = 1, depth = 9
+    for key in (fusion, norm):
+        assert torch.equal(s.state.per_modality["thermal"][key], torch.full((2,), 1.0))
+        assert torch.equal(s.state.per_modality["depth"][key], torch.full((2,), 9.0))
+    # rgb_shared still pools every client, RGB-only included
+    rgb = "backbone.prompt_blocks.0.conv0_0.weight"
+    assert torch.allclose(s.state.shared[rgb], torch.full((2,), 3800.0 / 600.0))
+    # RGB-only clients still receive their dataset's bucket
+    view = s.state.view_for("thermal")
+    assert torch.equal(view[fusion], torch.full((2,), 1.0))
+
+
+def test_selective_participation_off_is_bit_identical_to_legacy():
+    groups = ("aux_specific", "fusion", "norm")
+    a, _ = _server("modality", clients=_sa_clients(), bucket_groups=groups)
+    b, _ = _server("modality", clients=_sa_clients(), bucket_groups=groups,
+                   selective_participation=False)
+    for s in (a, b):
+        s.run_round(0)
+        s.run_round(1)
+    fa, fb = a.state.to_flat_dict(), b.state.to_flat_dict()
+    assert fa.keys() == fb.keys()
+    for k in fa:
+        assert torch.equal(fa[k], fb[k]), k
+
+
+def test_selective_participation_is_rejected_outside_modality_and_on_resume_mismatch():
+    try:
+        _server("fedavg", selective_participation=True)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("fedavg accepted selective_participation")
+    groups = ("aux_specific", "fusion", "norm")
+    on, _ = _server("modality", clients=_sa_clients(), bucket_groups=groups,
+                    selective_participation=True)
+    on.run_round(0)
+    path = on.save_state(1)
+    off, _ = _server("modality", clients=_sa_clients(), bucket_groups=groups)
+    try:
+        off.load_state(path)
+    except ValueError:
+        return
+    raise AssertionError("resume accepted a selective_participation mismatch")
+
+
 def test_default_bucket_groups_matches_explicit_legacy_default():
     clients = [StubClient("t", "thermal", 100, 1),
                StubClient("d", "depth", 300, 5)]
