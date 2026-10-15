@@ -102,7 +102,7 @@ class FederatedClient:
 
     def __init__(self, client_cfg, cfg, settings, base_seed: int = 42,
                  optimizer_state: str = "reset", verbose: bool = False,
-                 prox_mu: float = 0.0):
+                 prox_mu: float = 0.0, prime_sim_scalar: float = 0.0):
         if optimizer_state not in ("reset", "persist"):
             raise ValueError("optimizer_state must be 'reset' or 'persist'")
         self.cfg = cfg
@@ -111,6 +111,8 @@ class FederatedClient:
         self.optimizer_state = optimizer_state
         self.verbose = verbose
         self.prox_mu = float(prox_mu)
+        # FED-PRIME relevance term weight; inert unless the model has the pools.
+        self.prime_sim_scalar = float(prime_sim_scalar)
 
         self.client_id = client_cfg["client_id"]
         self.dataset_name = client_cfg["dataset"]
@@ -204,11 +206,13 @@ class FederatedClient:
     # -------------------------------------------------------------- training
 
     def local_train(self, net, dispatched_state, plan, round_idx, local_steps,
-                    device="cuda"):
+                    device="cuda", prox_anchor=None):
         """Run this client's local steps and return what it uploads.
 
         `net` is the shared network; `dispatched_state` is
         `GlobalState.view_for(self.aux_type)`. Returns (ClientUpdate, stats).
+        `prox_anchor` (FedMSplit-P) is the point the proximal term pulls toward
+        when it differs from the start point; None = the start point (FedProx).
         """
         seed = derive_seed(self.base_seed, round_idx, self.client_id)
         seed_everything(seed)
@@ -256,6 +260,12 @@ class FederatedClient:
         if getattr(self.settings, "fix_bn", False):
             actor.fix_bns()
 
+        backbone = getattr(net, "backbone", None)
+        prime_on = getattr(backbone, "prime_pool_size", 0) > 0
+        if prime_on:
+            backbone.reset_prime_usage()
+        prox_ref = dispatched_state if prox_anchor is None else prox_anchor
+
         loader = self._build_loader(local_steps, seed)
         accum = max(1, int(getattr(self.settings, "accum_iter", 1)))
 
@@ -281,11 +291,17 @@ class FederatedClient:
             n_samples_seen += bs
 
             loss, status = actor(data)
+            prime_reg = torch.zeros((), device=loss.device)
+            if prime_on and self.prime_sim_scalar:
+                # pull the selected prompts toward their inputs (the paper's
+                # stated intent; see notes for the sign of the official code)
+                prime_reg = -self.prime_sim_scalar * backbone.prime_reg
+                loss = loss + prime_reg
             prox = torch.zeros((), device=loss.device)
             if self.prox_mu:
                 for name, p in net.named_parameters():
-                    if p.requires_grad and name in dispatched_state:
-                        prox = prox + (p - dispatched_state[name].to(p)).pow(2).sum()
+                    if p.requires_grad and name in prox_ref:
+                        prox = prox + (p - prox_ref[name].to(p)).pow(2).sum()
                 prox = 0.5 * self.prox_mu * prox
                 loss = loss + prox
             (loss / accum).backward()
@@ -300,6 +316,8 @@ class FederatedClient:
             for k, v in status.items():
                 totals[k] = totals.get(k, 0.0) + float(v)
             totals["Loss/prox"] = totals.get("Loss/prox", 0.0) + float(prox.detach())
+            if prime_on:
+                totals["Loss/prime_reg"] = totals.get("Loss/prime_reg", 0.0) + float(prime_reg.detach())
             n_batches += 1
 
         if self.optimizer_state == "persist":
@@ -321,6 +339,8 @@ class FederatedClient:
             state=state,
             param_mask=param_mask,
             reliability=1.0)
+        if prime_on:
+            update.extras["prime_global_used"] = backbone.prime_global_used.clone()
 
         stats = OrderedDict(
             client_id=self.client_id,

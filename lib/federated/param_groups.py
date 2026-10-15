@@ -78,9 +78,11 @@ AUX_SPECIFIC = "aux_specific"    # consumes the auxiliary modality
 RGB_SHARED = "rgb_shared"        # consumes the RGB half
 FUSION = "fusion"                # fuses the two branches
 NORM = "norm"                    # normalisation, shared by construction
+PRIME = "prime"                  # FED-PRIME token pools + query projection
+                                 # (2026-10-16; absent from every other variant)
 
 #: Groups that are actually trained and therefore uploaded each round.
-TRAINABLE_GROUPS = (AUX_SPECIFIC, RGB_SHARED, FUSION, NORM)
+TRAINABLE_GROUPS = (AUX_SPECIFIC, RGB_SHARED, FUSION, NORM, PRIME)
 
 #: Groups whose meaning differs per auxiliary modality. The aggregator must
 #: only average these across clients that hold the SAME aux_type.
@@ -102,6 +104,9 @@ _RULES = (
     (re.compile(r"(^|\.)prompt_blocks\.\d+\.conv1x1\."), FUSION),
     # --- normalisation ------------------------------------------------------
     (re.compile(r"(^|\.)prompt_norms\.\d+\."), NORM),
+    # --- FED-PRIME (only exists when MODEL.BACKBONE.PRIME_POOL_SIZE > 0) -----
+    (re.compile(r"(^|\.)prime_(local|global)_prompt$"), PRIME),
+    (re.compile(r"(^|\.)prime_query_prompt_proj\."), PRIME),
 )
 
 

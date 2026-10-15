@@ -27,6 +27,11 @@ cfg.MODEL.BACKBONE.CLS_TOKEN_USE_MODE = 'ignore'
 cfg.MODEL.BACKBONE.CE_LOC = []
 cfg.MODEL.BACKBONE.CE_KEEP_RATIO = []
 cfg.MODEL.BACKBONE.CE_TEMPLATE_RANGE = 'ALL'  # choose between ALL, CTR_POINT, CTR_REC, GT_BOX
+# FED-PRIME token pools (2026-10-16). 0 = off = the unmodified ViPT, with no
+# extra parameter and bit-identical behaviour; every pre-existing variant and
+# config keeps 0.
+cfg.MODEL.BACKBONE.PRIME_POOL_SIZE = 0
+cfg.MODEL.BACKBONE.PRIME_TOP_K = 5
 
 # MODEL.HEAD
 cfg.MODEL.HEAD = edict()

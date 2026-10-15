@@ -116,7 +116,9 @@ def build_viptrack(cfg, training=True):
                                            search_size=to_2tuple(cfg.DATA.SEARCH.SIZE),
                                            template_size=to_2tuple(cfg.DATA.TEMPLATE.SIZE),
                                            new_patch_size=cfg.MODEL.BACKBONE.STRIDE,
-                                           prompt_type=cfg.TRAIN.PROMPT.TYPE
+                                           prompt_type=cfg.TRAIN.PROMPT.TYPE,
+                                           prime_pool_size=cfg.MODEL.BACKBONE.PRIME_POOL_SIZE,
+                                           prime_top_k=cfg.MODEL.BACKBONE.PRIME_TOP_K
                                            )
         hidden_dim = backbone.embed_dim
         patch_start_index = 1

@@ -82,6 +82,9 @@ class ClientUpdate:
     state: Dict[str, "Tensor"]         # absolute values of the trainable tensors
     param_mask: Optional[Dict[str, bool]] = None   # None == everything in state is valid
     reliability: float = 1.0
+    #: side information a variant needs beyond the tensors (FED-PRIME: which
+    #: rows of the inter-client pool were selected). Never read by Aggregator.
+    extras: Dict[str, object] = field(default_factory=dict)
 
     def provides(self, key: str) -> bool:
         """Did this client actually train and upload a usable value for `key`?
