@@ -9,14 +9,17 @@ def local_env_settings():
     # what the official README tells users to edit, so this is configuration,
     # not a code change.
 
-    root = os.environ.get('CVR_ROOT', r'D:\cvresearch')
-    workspace = os.path.join(root, 'ViPT')
+    # 2026-10-18 (eval-only worktree ViPT_evalnew): the project root is wherever
+    # THIS checkout is, not CVR_ROOT/ViPT, so the FED-PRIME model code that loads
+    # the checkpoint, the experiments/vipt/<tag>.yaml it reads and the
+    # output/checkpoints/train/vipt/<tag>/ it looks in all come from one tree.
+    workspace = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
     settings.prj_dir = workspace
     settings.save_dir = os.path.join(workspace, 'output')
-    settings.network_path = r'D:\cvresearch\ViPT\output\test\networks'          # Where tracking networks are stored.
-    settings.results_path = r'D:\cvresearch\ViPT\output\test\tracking_results'  # Where to store tracking results
-    settings.result_plot_path = r'D:\cvresearch\ViPT\output\test\result_plots'
-    settings.segmentation_path = r'D:\cvresearch\ViPT\output\test\segmentation_results'
+    settings.network_path = os.path.join(workspace, 'output', 'test', 'networks')          # Where tracking networks are stored.
+    settings.results_path = os.path.join(workspace, 'output', 'test', 'tracking_results')  # Where to store tracking results
+    settings.result_plot_path = os.path.join(workspace, 'output', 'test', 'result_plots')
+    settings.segmentation_path = os.path.join(workspace, 'output', 'test', 'segmentation_results')
 
     # Datasets this project does not use. Kept as fields (the EnvSettings
     # consumers expect them to exist) but pointed at local placeholders so a

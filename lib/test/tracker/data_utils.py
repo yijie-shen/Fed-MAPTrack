@@ -1,3 +1,5 @@
+import os
+
 import torch
 import numpy as np
 
@@ -21,6 +23,8 @@ class PreprocessorMM(object):
         # Deal with the image patch
         img_tensor = torch.tensor(img_arr).cuda().float().permute((2,0,1)).unsqueeze(dim=0)
         img_tensor_norm = ((img_tensor / 255.0) - self.mean) / self.std  # (1,6,H,W)
+        if os.environ.get("CVR_ZERO_AUX") == "1":
+            img_tensor_norm[:, 3:] = 0
         return img_tensor_norm
 
 
