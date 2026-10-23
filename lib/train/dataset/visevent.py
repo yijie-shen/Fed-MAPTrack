@@ -45,7 +45,7 @@ class VisEvent(BaseVideoDataset):
     def _build_sequence_list(self):
 
         file_path = os.path.join(self.root, '{}list.txt'.format(self.split))
-        # pandas 2.0 移除了 read_csv 的 squeeze 参数,改用 .squeeze("columns")
+        # pandas 2.0 removed the squeeze argument of read_csv; use .squeeze("columns") instead
         sequence_list = pandas.read_csv(file_path, header=None).squeeze("columns").values.tolist()
         return sequence_list
 

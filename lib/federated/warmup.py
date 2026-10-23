@@ -37,14 +37,14 @@ each tensor consumes (see param_groups.py):
         ViPT freezes the whole ViT. Unfreezing high blocks would be a method
         change, not a schedule change, so it is deliberately NOT wired here.
 
-Phase boundaries are data, not code (spec 8: "阶段边界必须可配置,不要硬编码").
+Phase boundaries are data, not code (design note 8: "phase boundaries must be configurable, not hard-coded").
 DEFAULT_PHASES is a starting point; anything can be overridden from yaml.
 
 -------------------------------------------------------------------------
 Degradation
 -------------------------------------------------------------------------
 `WarmupScheduler.no_warmup(num_rounds)` gives a single always-everything-open
-phase. That is the "Ours 去掉 progressive warm-up" ablation row in spec 14.1,
+phase. That is the "Ours without progressive warm-up" ablation row in design note 14.1,
 and it is also how you tell "the schedule is wrong" apart from "the aggregation
 is wrong" when a run misbehaves.
 """
@@ -166,8 +166,8 @@ class RoundPlan:
     """Everything the server needs for one round, fully resolved.
 
     This is what gets written to round_metrics.jsonl, so spec 16's
-    "warm-up 生效:日志能显示每轮 phase、trainable parameter groups、loss 权重
-    和聚合策略" is satisfied by dumping this object, not by re-deriving it.
+    "warm-up takes effect: the log shows every round's phase, trainable parameter groups, loss weights
+    and aggregation strategy" is satisfied by dumping this object, not by re-deriving it.
     """
     round_idx: int
     phase_name: str

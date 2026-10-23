@@ -18,7 +18,7 @@ classification shuffle samples freely; that advice is wrong here.
 
 This module therefore only ever partitions *sequence names*, and the sequence
 pool comes from the repo's own train lists, which already exclude the test
-benchmarks (spec 5.2: "若官方已划分 train/test,严格遵守官方划分").
+benchmarks (design note 5.2: "if the official train/test split exists, follow it strictly").
 
 -------------------------------------------------------------------------
 Client construction (spec section 5)

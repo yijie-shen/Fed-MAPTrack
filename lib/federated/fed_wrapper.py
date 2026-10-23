@@ -3,8 +3,8 @@
 """
 Federated wrapper around the official ViPT model (spec sections 4.2, 11.1, 16).
 
-spec 11.1: "原模型 forward 若不支持 aux_type/modality_mask,新增 fed_wrapper.py
-包一层,不直接污染原模型." So nothing here edits lib/models/vipt/*; this module
+design note 11.1: "if the original forward cannot take aux_type/modality_mask, add fed_wrapper.py
+as a wrapper instead of modifying the original model." So nothing here edits lib/models/vipt/*; this module
 only wraps, and the official single-machine training path never imports it.
 
 -------------------------------------------------------------------------
@@ -23,8 +23,8 @@ put in channels 3-5 when a client has no auxiliary sensor at all.
 -------------------------------------------------------------------------
 Missing modality: what goes in channels 3..5
 -------------------------------------------------------------------------
-spec 17: "不要把不存在的辅助模态用零张量假装为真实模态,除非同时传入
-modality_mask;否则 adapter 会学到错误统计."
+design note 17: "do not pretend a missing auxiliary modality is a real one by passing zero tensors, unless
+a modality_mask is passed as well; otherwise the adapter learns wrong statistics."
 
 So zeros are allowed exactly when the absence is declared. That is what this
 wrapper does, and the declaration is not optional -- every forward returns a

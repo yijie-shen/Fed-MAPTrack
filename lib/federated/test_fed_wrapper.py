@@ -6,7 +6,7 @@ Unit tests for fed_wrapper.py.
     D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_fed_wrapper.py
 
 Builds the REAL ViPT model on CPU. The central acceptance criterion from spec
-section 16 is "template_aux/search_aux 为 None 时 forward、loss、logging 均不报错",
+section 16 is "forward, loss and logging must not fail when template_aux/search_aux is None",
 and that is only meaningful against the real backbone -- a stub would prove
 nothing about whether patch_embed_prompt survives a zero-filled input.
 
@@ -78,7 +78,7 @@ def test_explicit_modality_mask_changes_tensor_seen_by_network():
       modality_mask={"rgb": 1, "thermal": 0, "depth": 0, "event": 0})
     assert torch.equal(net.seen[0][0][:, 3:], torch.zeros_like(aux))
 def test_param_mask_blocks_aux_keys_for_rgb_only_client():
-    """spec 16: 'RGB-only client 不会写入任何辅助 adapter'."""
+    """design note 16: an RGB-only client never writes any auxiliary adapter."""
     w = get_wrapper()
     mask = w.param_mask_for("none", aux_present=False)
     aux_keys = w.aux_specific_keys()

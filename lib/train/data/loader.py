@@ -2,7 +2,7 @@ import torch
 import torch.utils.data.dataloader
 import importlib
 import collections
-string_classes = str          # torch._six 在 PyTorch 2.0 被移除;它原本就定义 string_classes = str
+string_classes = str          # torch._six was removed in PyTorch 2.0; it used to define string_classes = str
 from lib.utils import TensorDict, TensorList
 
 if float(torch.__version__[:3]) >= 1.9 or len('.'.join((torch.__version__).split('.')[0:2])) > 3:
