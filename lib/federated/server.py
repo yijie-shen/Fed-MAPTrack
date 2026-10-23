@@ -64,6 +64,8 @@ DEFAULT_SPLIT = os.path.join(
     _REPO, "configs", "fed", "client_splits",
     "lasher_depthtrack_visevent_seed42_v2.json")
 
+DATASET_BUCKETS = {"lasher": "thermal", "depthtrack": "depth", "visevent": "event"}
+
 #: variant -> (modality_aware, use_warmup, aggregate)
 #
 # 2026-09-21: `fedavg_warm` added. The two mechanisms form a 2x2 grid and the
@@ -88,7 +90,8 @@ class FederatedServer:
                  num_rounds=120, clients_per_round=None, local_steps=50,
                  seed=42, out_dir=None, device="cuda", verbose=True,
                  modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None,
-                 split_path=None):
+                 split_path=None, bucket_groups=("aux_specific",),
+                 selective_participation=False):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -96,6 +99,12 @@ class FederatedServer:
         self.cfg = cfg
         self.settings = settings
         self.variant = variant
+        self.bucket_groups = tuple(bucket_groups)
+        if variant != "modality" and self.bucket_groups != ("aux_specific",):
+            raise ValueError("bucket_groups is only valid with variant=modality")
+        self.selective_participation = bool(selective_participation)
+        if self.selective_participation and variant != "modality":
+            raise ValueError("selective_participation is only valid with variant=modality")
         self.modality_aware, self.use_warmup, self.do_aggregate = VARIANTS[variant]
         self.num_rounds = int(num_rounds)
         self.clients_per_round = clients_per_round
@@ -119,11 +128,12 @@ class FederatedServer:
         aux_types = sorted({c.aux_type for c in clients if c.aux_type != NO_AUX})
         self.aux_types = tuple(aux_types)
         self.state = make_initial_state(net.state_dict(), self.param_groups,
-                                        aux_types=self.aux_types)
+                                        aux_types=self.aux_types,
+                                        bucket_groups=self.bucket_groups)
         # `local` keeps a separate state per client and never merges them.
         self.local_states = (
-            {cid: make_initial_state(net.state_dict(), self.param_groups,
-                                     aux_types=self.aux_types)
+             {cid: make_initial_state(net.state_dict(), self.param_groups,
+                                     aux_types=self.aux_types, bucket_groups=self.bucket_groups)
              for cid in self.clients} if variant == "local" else None)
 
         self.scheduler = (WarmupScheduler.default(num_rounds) if self.use_warmup
@@ -139,6 +149,8 @@ class FederatedServer:
         self.aggregator = Aggregator(self.param_groups,
                                      modality_aware=self.modality_aware,
                                      modality_alpha=self.modality_alpha,
+                                     bucket_groups=self.bucket_groups,
+                                     selective_participation=self.selective_participation,
                                      missing_client_weight=self.rgb_only_weight)
         self.log_path = os.path.join(self.out_dir, "round_metrics.jsonl")
         self.param_stats_path = os.path.join(self.out_dir, "param_group_stats.jsonl")
@@ -164,6 +176,8 @@ class FederatedServer:
         with open(os.path.join(self.out_dir, "run_config.json"), "w", encoding="utf-8") as f:
             json.dump({"run_id": self.run_id, "variant": variant, "seed": seed,
                        "local_steps": self.local_steps, "modality_alpha": self.modality_alpha,
+                       "bucket_groups": list(self.bucket_groups),
+                       "selective_participation": self.selective_participation,
                        "rgb_only_weight": self.rgb_only_weight, "prox_mu": self.prox_mu,
                        "git_hash": git_hash, "git_clean": git_clean,
                        "python": sys.version, "torch": torch.__version__,
@@ -191,6 +205,14 @@ class FederatedServer:
 
     # ----------------------------------------------------------------- round
 
+    def bucket_for(self, client):
+        if client.aux_type != NO_AUX:
+            return client.aux_type
+        try:
+            return DATASET_BUCKETS[client.dataset_name]
+        except (AttributeError, KeyError):
+            raise ValueError("RGB-only client %s lacks a known dataset bucket" % client.client_id)
+
     def run_round(self, round_idx):
         plan = self.scheduler.resolve(round_idx)
         chosen = self.select(round_idx, plan)
@@ -204,11 +226,12 @@ class FederatedServer:
             client = self.clients[cid]
             src = (self.local_states[cid] if self.local_states is not None
                    else self.state)
-            dispatched = src.view_for(client.aux_type)
+            dispatched = src.view_for(client.aux_type, self.bucket_for(client))
             update, stats = client.local_train(
                 self.net, dispatched, plan, round_idx,
                 local_steps=self.local_steps, device=self.device)
             updates.append(update)
+            update.bucket_type = self.bucket_for(client)
             client_stats.append(stats)
 
             if self.local_states is not None:
@@ -267,6 +290,8 @@ class FederatedServer:
                                     if self.do_aggregate else False)
         record["phase_modality_aware"] = plan.modality_aware
         record["modality_alpha"] = self.modality_alpha
+        record["bucket_groups"] = list(self.bucket_groups)
+        record["selective_participation"] = self.selective_participation
         record["rgb_only_weight"] = self.rgb_only_weight
         record["prox_mu"] = self.prox_mu
         record["variant"] = self.variant
@@ -306,6 +331,8 @@ class FederatedServer:
         blob = {"round": round_idx, "variant": self.variant,
                 "seed": self.seed,
                 "run_id": self.run_id,
+                "bucket_groups": list(self.bucket_groups),
+                "selective_participation": self.selective_participation,
                 "state": self.state.to_flat_dict()}
         if self.local_states is not None:
             # 2026-09-20: `local` never updates self.state, so persisting only
@@ -316,6 +343,27 @@ class FederatedServer:
             }
         torch.save(blob, path)
         return path
+
+    def load_state(self, path):
+        """Restore a saved federated state before continuing a run.
+
+        Bucket selection is part of the state contract: accepting a checkpoint
+        made with another layout would silently dispatch the wrong tensors.
+        """
+        blob = torch.load(path, map_location="cpu", weights_only=False)
+        saved_groups = tuple(blob.get("bucket_groups", ("aux_specific",)))
+        if saved_groups != self.bucket_groups:
+            raise ValueError("checkpoint bucket_groups %r != run %r" %
+                             (saved_groups, self.bucket_groups))
+        saved_sel = bool(blob.get("selective_participation", False))
+        if saved_sel != self.selective_participation:
+            raise ValueError("checkpoint selective_participation %r != run %r" %
+                             (saved_sel, self.selective_participation))
+        self.state = GlobalState.from_flat_dict(blob["state"])
+        if self.local_states is not None and "local_states" in blob:
+            self.local_states = {cid: GlobalState.from_flat_dict(state)
+                                 for cid, state in blob["local_states"].items()}
+        return int(blob["round"])
 
     def export_checkpoint(self, round_idx, aux_type=None, out_dir=None,
                           client_id=None):
@@ -424,6 +472,12 @@ def main(argv=None):
                         "before 2026-09-21 used), 0.0 = the pooled FedAvg "
                         "adapter, in between = a blend. No effect without "
                         "modality awareness.")
+    p.add_argument("--bucket-groups", default="aux_specific",
+                   help="comma-separated parameter groups to bucket; modality only")
+    p.add_argument("--selective-participation", action="store_true",
+                   help="S-A: RGB-only clients receive their dataset's bucket "
+                        "but do not contribute to bucketed fusion/norm "
+                        "aggregation; modality variant only")
     p.add_argument("--split", default=DEFAULT_SPLIT)
     p.add_argument("--rgb-only-weight", type=float, default=1.0)
     p.add_argument("--prox-mu", type=float, default=None)
@@ -442,6 +496,11 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true",
                    help="print the round plan and the selection, train nothing")
     args = p.parse_args(argv)
+    args.bucket_groups = tuple(g for g in args.bucket_groups.split(",") if g)
+    if args.variant != "modality" and args.bucket_groups != ("aux_specific",):
+        raise ValueError("--bucket-groups is only valid with --variant modality")
+    if args.selective_participation and args.variant != "modality":
+        raise ValueError("--selective-participation is only valid with --variant modality")
     if args.prox_mu is not None and args.variant != "fedprox":
         raise ValueError("--prox-mu is only valid with --variant fedprox")
 
@@ -460,6 +519,8 @@ def main(argv=None):
     server = FederatedServer(
         net, clients, cfg, settings, variant=args.variant,
         modality_alpha=args.modality_alpha,
+        bucket_groups=args.bucket_groups,
+        selective_participation=args.selective_participation,
         rgb_only_weight=args.rgb_only_weight,
         prox_mu=args.prox_mu,
         split_path=args.split,
