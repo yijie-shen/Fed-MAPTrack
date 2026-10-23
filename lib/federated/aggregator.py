@@ -86,6 +86,9 @@ class ClientUpdate:
     # The sensor bucket used for groups that are explicitly bucketed.  Sensor
     # clients use aux_type; RGB-only clients receive their dataset's bucket.
     bucket_type: Optional[str] = None
+    #: side information a variant needs beyond the tensors (FED-PRIME: which
+    #: rows of the inter-client pool were selected). Never read by Aggregator.
+    extras: Dict[str, object] = field(default_factory=dict)
 
     def provides(self, key: str) -> bool:
         """Did this client actually train and upload a usable value for `key`?

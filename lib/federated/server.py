@@ -57,7 +57,11 @@ from lib.federated.aggregator import (  # noqa: E402
 )
 from lib.federated.client import FederatedClient, seed_everything  # noqa: E402
 from lib.federated.client_data import load_split  # noqa: E402
-from lib.federated.param_groups import AUX_SPECIFIC, build_param_groups  # noqa: E402
+from lib.federated.param_groups import (  # noqa: E402
+    AUX_SPECIFIC, FUSION, NORM, PRIME, RGB_SHARED, build_param_groups)
+from lib.federated.personalized import (  # noqa: E402
+    FEDMSPLIT_PROX_LAMBDA, PRIME_OUTER_LOOPS, PRIME_POOL_SIZE, PRIME_SIM_SCALAR,
+    PRIME_TOP_K, align_global_prompts, fedmsplit_p_aggregate)
 from lib.federated.warmup import WarmupScheduler  # noqa: E402
 
 DEFAULT_SPLIT = os.path.join(
@@ -86,7 +90,17 @@ VARIANTS = OrderedDict(
     # auxiliary prompt group stays private to each sensor client.
     fedper=(False, False, True),
     ditto=(False, False, True),
+    # 2026-10-16: the two baselines of Phung et al. (ICCV'25). Both are
+    # personalised: one model per client, exported per sensor client. Their
+    # aggregation lives in _aggregate_fedmsplit_p / _after_aggregate_fedprime.
+    fedmsplit_p=(False, False, True),
+    fedprime=(False, False, True),
 )
+
+#: the variants that keep a private model per client
+NEW_PERSONALIZED = ("fedmsplit_p", "fedprime")
+#: parameter groups that FedMSplit-P treats as blocks
+FEDMSPLIT_BLOCKS = (AUX_SPECIFIC, RGB_SHARED, FUSION, NORM)
 
 
 class FederatedServer:
@@ -95,7 +109,8 @@ class FederatedServer:
                  seed=42, out_dir=None, device="cuda", verbose=True,
                  modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None,
                  split_path=None, bucket_groups=("aux_specific",),
-                 selective_participation=False, ditto_lambda=0.1):
+                 selective_participation=False, ditto_lambda=0.1,
+                 prime_sim_scalar=None, prime_outer_loops=None):
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -161,15 +176,57 @@ class FederatedServer:
                               if c.aux_type != NO_AUX}
                              if variant == "ditto" else None)
 
+        # ---- FedMSplit-P / FED-PRIME private state (2026-10-16) -------------
+        self.fmp_states = None       # fedmsplit_p: {cid: {key: tensor}}
+        self.fmp_anchor = None       # fedmsplit_p: data-weighted mean of uploads
+        self.prime_local = None      # fedprime: {cid: {key: tensor}} intra pool + query
+        self.prime_global_key = None
+        self.pers_info = None
+        if variant == "fedmsplit_p":
+            self.fmp_states = {
+                cid: OrderedDict((k, v.detach().clone())
+                                 for k, v in self.state.shared.items())
+                for cid in self.clients}
+            self.fmp_anchor = OrderedDict((k, v.detach().clone())
+                                          for k, v in self.state.shared.items())
+            # nothing in `self.state` is dispatched or exported for this variant
+        if variant == "fedprime":
+            backbone = getattr(net, "backbone", None)
+            if backbone is not None and not getattr(backbone, "prime_pool_size", 0):
+                raise ValueError("fedprime needs a model built with "
+                                 "MODEL.BACKBONE.PRIME_POOL_SIZE > 0")
+            prime_keys = [k for k, g in self.param_groups.items() if g == PRIME]
+            gkeys = [k for k in prime_keys if k.endswith("prime_global_prompt")]
+            if len(gkeys) != 1 or len(prime_keys) != 3:
+                raise ValueError("expected 3 FED-PRIME tensors (local pool, "
+                                 "global pool, query projection), got %s" % prime_keys)
+            self.prime_global_key = gkeys[0]
+            local_keys = [k for k in prime_keys if k != self.prime_global_key]
+            # the intra pool and the query projection never leave the client
+            self.prime_local = {
+                cid: OrderedDict((k, self.state.shared[k].detach().clone())
+                                 for k in local_keys)
+                for cid in self.clients}
+            for k in local_keys:
+                del self.state.shared[k]
+        self.prime_sim_scalar = float(PRIME_SIM_SCALAR if prime_sim_scalar is None
+                                      else prime_sim_scalar)
+        self.prime_outer_loops = int(PRIME_OUTER_LOOPS if prime_outer_loops is None
+                                     else prime_outer_loops)
+
         self.scheduler = (WarmupScheduler.default(num_rounds) if self.use_warmup
                           else WarmupScheduler.no_warmup(
                               num_rounds, modality_aware=self.modality_aware))
         self.modality_alpha = float(modality_alpha)
         self.rgb_only_weight = float(rgb_only_weight)
-        self.prox_mu = (0.01 if prox_mu is None else float(prox_mu)) if variant == "fedprox" else 0.0
+        # FedMSplit-P's proximal weight is the official default (0.01), which is
+        # also the project's FedProx mu; it pulls toward the global average.
+        if variant == "fedmsplit_p" and prox_mu is None:
+            prox_mu = FEDMSPLIT_PROX_LAMBDA
+        self.prox_mu = (0.01 if prox_mu is None else float(prox_mu)) if variant in ("fedprox", "fedmsplit_p") else 0.0
         self.ditto_lambda = float(ditto_lambda) if variant == "ditto" else 0.0
-        if variant != "fedprox" and prox_mu not in (None, 0, 0.0):
-            raise ValueError("prox_mu is only valid with fedprox")
+        if variant not in ("fedprox", "fedmsplit_p") and prox_mu not in (None, 0, 0.0):
+            raise ValueError("prox_mu is only valid with fedprox / fedmsplit_p")
         if self.ditto_lambda < 0:
             raise ValueError("ditto_lambda must be non-negative")
         if self.rgb_only_weight <= 0:
@@ -216,7 +273,15 @@ class FederatedServer:
                        "fingerprint": split_doc.get("fingerprint"),
                        "weights_fingerprint": split_doc.get("weights_fingerprint"),
                        "started_at": datetime.now(timezone.utc).isoformat(),
-                       "phase_table": self.scheduler.describe()}, f, ensure_ascii=False, indent=2)
+                       "phase_table": self.scheduler.describe(),
+                       **({"personalized": {
+                           "prime_sim_scalar": self.prime_sim_scalar,
+                           "prime_outer_loops": self.prime_outer_loops,
+                           "prime_pool_size": PRIME_POOL_SIZE,
+                           "prime_top_k": PRIME_TOP_K,
+                           "fedmsplit_prox_lambda": self.prox_mu}}
+                          if variant in NEW_PERSONALIZED else {})},
+                      f, ensure_ascii=False, indent=2)
 
     # ------------------------------------------------------------- selection
 
@@ -256,9 +321,11 @@ class FederatedServer:
             src = (self.local_states[cid] if self.local_states is not None
                    else self.state)
             dispatched = self._dispatch(cid, client, src)
+            extra = ({"prox_anchor": self.fmp_anchor}
+                     if self.fmp_states is not None else {})
             update, stats = client.local_train(
                 self.net, dispatched, plan, round_idx,
-                local_steps=self.local_steps, device=self.device)
+                local_steps=self.local_steps, device=self.device, **extra)
             updates.append(update)
             update.bucket_type = self.bucket_for(client)
             client_stats.append(stats)
@@ -311,17 +378,26 @@ class FederatedServer:
             # ceiling: fedavg stays pooled no matter what a phase asks for.
             self.aggregator.modality_aware = (
                 self.modality_aware and plan.modality_aware)
-            aggregation_updates = updates
-            if self.fedper_aux_states is not None:
-                # Do not let the FedAvg degradation path see aux_specific at
-                # all.  It therefore aggregates precisely the three shared
-                # groups, while the loop above retained each private upload.
-                aggregation_updates = [self._without_private_aux(u)
-                                       for u in updates]
-            self.state, agg_stats = self.aggregator.aggregate(
-                self.state, aggregation_updates, round_idx=round_idx, phase=plan)
-            agg_summary = agg_stats.group_summary()
-            self._last_agg_stats = agg_stats
+            if self.fmp_states is not None:
+                agg_summary = self._aggregate_fedmsplit_p(updates)
+                self._last_agg_stats = None
+            else:
+                aggregation_updates = updates
+                if self.fedper_aux_states is not None:
+                    # Do not let the FedAvg degradation path see aux_specific at
+                    # all.  It therefore aggregates precisely the three shared
+                    # groups, while the loop above retained each private upload.
+                    aggregation_updates = [self._without_private_aux(u)
+                                           for u in updates]
+                if self.prime_local is not None:
+                    # the pools are NOT FedAvg'd: strip them from the reduction
+                    aggregation_updates = [self._without_prime(u) for u in updates]
+                self.state, agg_stats = self.aggregator.aggregate(
+                    self.state, aggregation_updates, round_idx=round_idx, phase=plan)
+                agg_summary = agg_stats.group_summary()
+                self._last_agg_stats = agg_stats
+                if self.prime_local is not None:
+                    self._after_aggregate_fedprime(updates, round_idx)
 
         record = OrderedDict(plan.as_dict())
         # The scheduler only selects parameter groups. Loss weights come from
@@ -362,14 +438,31 @@ class FederatedServer:
         record["clients"] = client_stats
         if agg_summary is not None:
             record["aggregation"] = _jsonable(agg_summary)
-            with open(self.param_stats_path, "a", encoding="utf-8") as f:
-                for st in self._last_agg_stats.per_key:
-                    f.write(json.dumps(_jsonable(st.__dict__), ensure_ascii=False) + "\n")
+            if self._last_agg_stats is not None:
+                with open(self.param_stats_path, "a", encoding="utf-8") as f:
+                    for st in self._last_agg_stats.per_key:
+                        f.write(json.dumps(_jsonable(st.__dict__), ensure_ascii=False) + "\n")
+        if self.pers_info is not None:
+            record["personalized"] = _jsonable(self.pers_info)
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return record
 
+    # ------------------------------------------- FedPer / Ditto / FedMSplit-P / FED-PRIME
+
     def _dispatch(self, client_id, client, source):
+        """What client `client_id` starts its local steps from."""
+        if self.fmp_states is not None:
+            out = OrderedDict(self.fmp_states[client_id])
+            if client.aux_type == NO_AUX:
+                # project-wide missing-modality contract: an RGB-only client
+                # always sees the pretrained auxiliary tensors
+                out.update(self.state.initial_aux)
+            return out
+        if self.prime_local is not None:
+            out = source.view_for(client.aux_type)
+            out.update(self.prime_local[client_id])
+            return out
         if self.fedper_aux_states is None:
             return source.view_for(client.aux_type, self.bucket_for(client))
         out = OrderedDict(source.shared)
@@ -385,7 +478,8 @@ class FederatedServer:
         mask = None if update.param_mask is None else OrderedDict(
             (k, v) for k, v in update.param_mask.items() if k in state)
         return type(update)(update.client_id, update.num_samples, update.aux_type,
-                            state, mask, update.reliability)
+                            state, mask, update.reliability,
+                            bucket_type=update.bucket_type, extras=dict(update.extras))
 
     @staticmethod
     def _fold_update(state, aux_type, update):
@@ -396,6 +490,51 @@ class FederatedServer:
             bank = state.per_modality.get(aux_type)
             if bank is not None and k_ in bank:
                 bank[k_] = v.detach().clone()
+
+    def _without_prime(self, update):
+        state = OrderedDict((k, v) for k, v in update.state.items()
+                            if self.param_groups.get(k) != PRIME)
+        mask = None if update.param_mask is None else OrderedDict(
+            (k, v) for k, v in update.param_mask.items() if k in state)
+        return type(update)(update.client_id, update.num_samples, update.aux_type,
+                            state, mask, update.reliability,
+                            bucket_type=update.bucket_type, extras=dict(update.extras))
+
+    def _aggregate_fedmsplit_p(self, updates):
+        """Similarity-weighted personalised update (see personalized.py)."""
+        states = OrderedDict((u.client_id, u.state) for u in updates)
+        blocks = OrderedDict(
+            (g, [k for k in next(iter(states.values()))
+                 if self.param_groups.get(k) == g]) for g in FEDMSPLIT_BLOCKS)
+        provides = {u.client_id: {g: (g != AUX_SPECIFIC or u.aux_type != NO_AUX)
+                                  for g in FEDMSPLIT_BLOCKS} for u in updates}
+        weights = {u.client_id: float(u.num_samples) for u in updates}
+        personal, gavg, info = fedmsplit_p_aggregate(states, blocks, provides, weights)
+        for cid, tensors in personal.items():
+            for k, v in tensors.items():
+                self.fmp_states[cid][k] = v.detach().clone()
+        for k, v in gavg.items():
+            self.fmp_anchor[k] = v.detach().clone()
+        self.pers_info = info
+        return OrderedDict((b, dict(v)) for b, v in info.items())
+
+    def _after_aggregate_fedprime(self, updates, round_idx):
+        """Keep each client's intra pool / query; align the inter pool."""
+        gkey = self.prime_global_key
+        previous = self.state.shared[gkey]
+        rows = OrderedDict()
+        for u in updates:
+            for k in self.prime_local[u.client_id]:
+                self.prime_local[u.client_id][k] = u.state[k].detach().clone()
+            used = u.extras["prime_global_used"].bool()
+            if bool(used.any()):
+                rows[u.client_id] = u.state[gkey].detach().cpu()[used]
+        new_pool, info = align_global_prompts(
+            rows, previous.detach().cpu(), outer_loops=self.prime_outer_loops,
+            seed=(self.seed * 1_000_003 + round_idx) & 0x7FFFFFFF)
+        self.state.shared[gkey] = new_pool.to(previous.dtype).to(previous.device)
+        self.pers_info = OrderedDict(info)
+        return info
 
     def run(self, start=0, save_every=10):
         if self.verbose:
@@ -437,6 +576,11 @@ class FederatedServer:
         if self.ditto_states is not None:
             blob["ditto_states"] = {cid: state.to_flat_dict()
                                     for cid, state in self.ditto_states.items()}
+        if self.fmp_states is not None:
+            blob["fmp_states"] = self.fmp_states
+            blob["fmp_anchor"] = self.fmp_anchor
+        if self.prime_local is not None:
+            blob["prime_local"] = self.prime_local
         torch.save(blob, path)
         return path
 
@@ -474,6 +618,11 @@ class FederatedServer:
                 raise ValueError("Ditto checkpoint has no private states")
             self.ditto_states = {cid: GlobalState.from_flat_dict(flat)
                                  for cid, flat in restored.items()}
+        if self.fmp_states is not None:
+            self.fmp_states = blob["fmp_states"]
+            self.fmp_anchor = blob["fmp_anchor"]
+        if self.prime_local is not None:
+            self.prime_local = blob["prime_local"]
         return int(blob["round"])
 
     def export_checkpoint(self, round_idx, aux_type=None, out_dir=None,
@@ -512,6 +661,19 @@ class FederatedServer:
                 client_ids = list(self.fedper_aux_states)
             targets = [(cid, self.clients[cid].aux_type, self.state)
                        for cid in client_ids]
+        elif self.fmp_states is not None or self.prime_local is not None:
+            # personalised: one checkpoint per SENSOR client (the evaluation
+            # protocol averages the three sensor clients' scores)
+            if client_id is not None:
+                if client_id not in self.clients:
+                    raise KeyError("unknown client: %s" % client_id)
+                client_ids = [client_id]
+            else:
+                client_ids = [cid for cid, c in self.clients.items()
+                              if c.aux_type != NO_AUX
+                              and (aux_type is None or c.aux_type == aux_type)]
+            targets = [(cid, self.clients[cid].aux_type, self.state)
+                       for cid in client_ids]
         else:
             aux_types = ([aux_type] if aux_type else
                          (list(self.aux_types) or [NO_AUX]))
@@ -522,7 +684,9 @@ class FederatedServer:
             sd = OrderedDict((k, v.detach().clone())
                              for k, v in self.frozen_reference.items())
             view = (self._dispatch(cid, self.clients[cid], source)
-                    if self.fedper_aux_states is not None else source.view_for(aux))
+                    if (self.fedper_aux_states is not None or self.fmp_states is not None
+                        or self.prime_local is not None)
+                    else source.view_for(aux))
             missing = [k for k in view if k not in sd]
             if missing:
                 raise KeyError("aggregated keys absent from the model: %s"
@@ -575,14 +739,21 @@ def build_everything(args):
     update_settings(settings, cfg)
     cfg.TRAIN.NUM_WORKER = args.workers
 
+    if args.variant == "fedprime":
+        cfg.MODEL.BACKBONE.PRIME_POOL_SIZE = PRIME_POOL_SIZE
+        cfg.MODEL.BACKBONE.PRIME_TOP_K = PRIME_TOP_K
+
     seed_everything(args.seed)
     net = build_viptrack(cfg, training=True).to(args.device)
 
     _, by_id = load_split(args.split)
     wanted = args.clients.split(",") if args.clients else list(by_id)
-    prox_mu = args.prox_mu if args.prox_mu is not None else (0.01 if args.variant == "fedprox" else 0.0)
+    prox_mu = args.prox_mu if args.prox_mu is not None else (
+        0.01 if args.variant in ("fedprox", "fedmsplit_p") else 0.0)
+    prime_sim = (args.prime_sim_scalar if args.prime_sim_scalar is not None
+                 else PRIME_SIM_SCALAR) if args.variant == "fedprime" else 0.0
     clients = [FederatedClient(by_id[cid], cfg, settings, base_seed=args.seed,
-                               prox_mu=prox_mu,
+                               prox_mu=prox_mu, prime_sim_scalar=prime_sim,
                                verbose=False)
                for cid in wanted]
     return net, clients, cfg, settings
@@ -608,6 +779,11 @@ def main(argv=None):
     p.add_argument("--prox-mu", type=float, default=None)
     p.add_argument("--ditto-lambda", type=float, default=0.1,
                    help="Ditto personalized-model proximal coefficient")
+    p.add_argument("--prime-sim-scalar", type=float, default=None,
+                   help="fedprime only: weight of the prompt-relevance term "
+                        "(default 0.01, the official default)")
+    p.add_argument("--prime-outer-loops", type=int, default=None,
+                   help="fedprime only: server alignment loops (default 5)")
     p.add_argument("--config", default="repro_rgbt")
     p.add_argument("--rounds", type=int, default=120)
     p.add_argument("--local-steps", type=int, default=50)
@@ -628,10 +804,13 @@ def main(argv=None):
         raise ValueError("--bucket-groups is only valid with --variant modality")
     if args.selective_participation and args.variant != "modality":
         raise ValueError("--selective-participation is only valid with --variant modality")
-    if args.prox_mu is not None and args.variant != "fedprox":
-        raise ValueError("--prox-mu is only valid with --variant fedprox")
+    if args.prox_mu is not None and args.variant not in ("fedprox", "fedmsplit_p"):
+        raise ValueError("--prox-mu is only valid with --variant fedprox / fedmsplit_p")
     if args.variant != "ditto" and args.ditto_lambda != 0.1:
         raise ValueError("--ditto-lambda is only valid with --variant ditto")
+    if args.variant != "fedprime" and (args.prime_sim_scalar is not None
+                                       or args.prime_outer_loops is not None):
+        raise ValueError("--prime-* options are only valid with --variant fedprime")
 
     if args.dry_run:
         _, by_id = load_split(args.split)
@@ -653,6 +832,8 @@ def main(argv=None):
         rgb_only_weight=args.rgb_only_weight,
         prox_mu=args.prox_mu,
         ditto_lambda=args.ditto_lambda,
+        prime_sim_scalar=args.prime_sim_scalar,
+        prime_outer_loops=args.prime_outer_loops,
         split_path=args.split,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,

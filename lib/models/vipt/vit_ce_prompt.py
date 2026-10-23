@@ -85,7 +85,7 @@ class VisionTransformerCE(VisionTransformer):
                  num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
                  act_layer=None, weight_init='', ce_loc=None, ce_keep_ratio=None, search_size=None, template_size=None,
-                 new_patch_size=None, prompt_type=None):
+                 new_patch_size=None, prompt_type=None, prime_pool_size=0, prime_top_k=5):
         """
         Args:
             img_size (int, tuple): input image size
@@ -159,6 +159,24 @@ class VisionTransformerCE(VisionTransformer):
                 prompt_norms.append(norm_layer(embed_dim))
             self.prompt_norms = nn.Sequential(*prompt_norms)
 
+        # FED-PRIME (Phung et al., ICCV'25) token pools. Off (pool size 0) creates
+        # nothing: the model, its state_dict and its forward are the original.
+        # Names contain "prompt" so that param_groups.py / the freeze rule treat
+        # them as trainable prompt tensors (group PRIME).
+        self.prime_pool_size = int(prime_pool_size)
+        self.prime_top_k = int(prime_top_k)
+        self.prime_reg = None             # last forward's relevance term
+        self.prime_global_used = None     # bool[pool]: rows selected since reset
+        if self.prime_pool_size > 0:
+            if self.prime_top_k > self.prime_pool_size:
+                raise ValueError("prime_top_k must not exceed prime_pool_size")
+            # intra-client pool: stays on the client, never aggregated
+            self.prime_local_prompt = nn.Parameter(torch.randn(self.prime_pool_size, embed_dim) * 0.02)
+            # inter-client pool: aligned and aggregated by the server
+            self.prime_global_prompt = nn.Parameter(torch.randn(self.prime_pool_size, embed_dim) * 0.02)
+            # input -> query; the official model's `features_proj` (no bias)
+            self.prime_query_prompt_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         blocks = []
         ce_index = 0
@@ -181,6 +199,39 @@ class VisionTransformerCE(VisionTransformer):
 
         self.init_weights(weight_init)
 
+    def reset_prime_usage(self):
+        if self.prime_pool_size > 0:
+            self.prime_global_used = torch.zeros(self.prime_pool_size, dtype=torch.bool)
+
+    def _prime_prefix(self, embed):
+        """Select prompt tokens for a batch (official Fed-Prime model).
+
+        embed: (B, N, C) patch embeddings of template+search RGB tokens.
+        Query = max over tokens of the detached embedding, projected and
+        L2-normalised; keys = L2-normalised pool rows (the prompts themselves).
+        Each sample takes its top-k rows by cosine; the batch then keeps the k
+        most frequently chosen rows, so all samples share one prefix (as in the
+        official code). Returns (prefix (B, 2k, C), reg), where reg is the
+        batch mean of the summed cosine similarity to the selected rows.
+        """
+        k = self.prime_top_k
+        q = F.normalize(self.prime_query_prompt_proj(embed.detach().max(dim=1)[0]), dim=-1)
+        picked, reg = [], 0.0
+        for name in ("prime_local_prompt", "prime_global_prompt"):
+            pool = getattr(self, name)
+            sim = q @ F.normalize(pool, dim=-1).t()                 # (B, pool)
+            per_sample = sim.topk(k, dim=1)[1]
+            counts = torch.bincount(per_sample.reshape(-1), minlength=pool.shape[0])
+            idx = counts.topk(k)[1]
+            picked.append(pool[idx])                                # (k, C)
+            reg = reg + sim[:, idx].sum() / sim.shape[0]
+            if name == "prime_global_prompt":
+                if self.prime_global_used is None:
+                    self.reset_prime_usage()
+                self.prime_global_used[idx.detach().cpu()] = True
+        prefix = torch.cat(picked, dim=0).unsqueeze(0).expand(embed.shape[0], -1, -1)
+        return prefix, reg
+
     def forward_features(self, z, x, mask_z=None, mask_x=None,
                          ce_template_mask=None, ce_keep_rate=None,
                          return_last_attn=False):
@@ -197,6 +248,11 @@ class VisionTransformerCE(VisionTransformer):
 
         z = self.patch_embed(z)
         x = self.patch_embed(x)
+
+        n_pre = 0
+        if self.prime_pool_size > 0:
+            prefix, self.prime_reg = self._prime_prefix(torch.cat([z, x], dim=1))
+            n_pre = prefix.shape[1]
 
         z_dte = self.patch_embed_prompt(z_dte)
         x_dte = self.patch_embed_prompt(x_dte)
@@ -249,6 +305,8 @@ class VisionTransformerCE(VisionTransformer):
             x = torch.cat([cls_tokens, x], dim=1)
 
         x = self.pos_drop(x)
+        if n_pre:
+            x = torch.cat([prefix, x], dim=1)
 
         lens_z = self.pos_embed_z.shape[1]
         lens_x = self.pos_embed_x.shape[1]
@@ -268,6 +326,8 @@ class VisionTransformerCE(VisionTransformer):
             if i >= 1:
                 if self.prompt_type in ['vipt_deep']:
                     x_ori = x
+                    if n_pre:
+                        x = x[:, n_pre:]
                     # recover x to go through prompt blocks
                     lens_z_new = global_index_t.shape[1]
                     lens_x_new = global_index_s.shape[1]
@@ -307,15 +367,20 @@ class VisionTransformerCE(VisionTransformer):
 
                     x = combine_tokens(z, x, mode=self.cat_mode)
                     # re-conduct CE
-                    x = x_ori + candidate_elimination_prompt(x, global_index_t.shape[1], global_index_s)
+                    x_ce = candidate_elimination_prompt(x, global_index_t.shape[1], global_index_s)
+                    if n_pre:
+                        x_ce = torch.cat([torch.zeros_like(x_ori[:, :n_pre]), x_ce], dim=1)
+                    x = x_ori + x_ce
 
             x, global_index_t, global_index_s, removed_index_s, attn = \
-                blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate)
+                blk(x, global_index_t, global_index_s, mask_x, ce_template_mask, ce_keep_rate, n_prefix=n_pre)
 
             if self.ce_loc is not None and i in self.ce_loc:
                 removed_indexes_s.append(removed_index_s)
 
         x = self.norm(x)
+        if n_pre:
+            x = x[:, n_pre:]          # the head never sees the prompt tokens
         lens_x_new = global_index_s.shape[1]
         lens_z_new = global_index_t.shape[1]
 

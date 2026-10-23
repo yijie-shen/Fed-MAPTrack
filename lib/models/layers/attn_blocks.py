@@ -90,7 +90,11 @@ class CEBlock(nn.Module):
 
         self.keep_ratio_search = keep_ratio_search
 
-    def forward(self, x, global_index_template, global_index_search, mask=None, ce_template_mask=None, keep_ratio_search=None):
+    def forward(self, x, global_index_template, global_index_search, mask=None, ce_template_mask=None, keep_ratio_search=None,
+                n_prefix=0):
+        # n_prefix (FED-PRIME): the first n_prefix tokens are prompt tokens that
+        # take part in attention but are neither template nor search tokens, so
+        # candidate elimination must look past them. 0 = the original code path.
         x_attn, attn = self.attn(self.norm1(x), mask, True)
         x = x + self.drop_path(x_attn)
         lens_t = global_index_template.shape[1]
@@ -98,7 +102,13 @@ class CEBlock(nn.Module):
         removed_index_search = None
         if self.keep_ratio_search < 1 and (keep_ratio_search is None or keep_ratio_search < 1):
             keep_ratio_search = self.keep_ratio_search if keep_ratio_search is None else keep_ratio_search
-            x, global_index_search, removed_index_search = candidate_elimination(attn, x, lens_t, keep_ratio_search, global_index_search, ce_template_mask)
+            if n_prefix:
+                x_new, global_index_search, removed_index_search = candidate_elimination(
+                    attn[:, :, n_prefix:, n_prefix:], x[:, n_prefix:], lens_t, keep_ratio_search,
+                    global_index_search, ce_template_mask)
+                x = torch.cat([x[:, :n_prefix], x_new], dim=1)
+            else:
+                x, global_index_search, removed_index_search = candidate_elimination(attn, x, lens_t, keep_ratio_search, global_index_search, ce_template_mask)
 
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x, global_index_template, global_index_search, removed_index_search, attn

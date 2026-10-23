@@ -341,6 +341,10 @@ def test_the_variant_is_the_ceiling_not_the_phase():
 
 def test_only_local_skips_aggregation():
     for variant in VARIANTS:
+        if variant == "fedprime":
+            # needs a net that has the FED-PRIME pools; covered, with such a
+            # net, in test_personalized.py
+            continue
         s, _ = _server(variant)
         assert s.do_aggregate == (variant != "local"), variant
         assert (s.local_states is not None) == (variant == "local"), variant
