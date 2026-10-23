@@ -170,7 +170,7 @@ if __name__ == '__main__':
         # (the author's machine). The official README tells users to modify
         # <DATASET_PATH> here, so this is the intended edit point.
         # --seq_home overrides it without touching the file again.
-        seq_home = args.seq_home or r'D:\cvresearch\data\lasher\testingset'
+        seq_home = args.seq_home or join(os.environ.get('CVR_DATA', join(os.environ.get('CVR_ROOT', abspath(join(dirname(__file__), '..'))), 'data')), 'lasher', 'testingset')
         seq_list = [f for f in os.listdir(seq_home) if isdir(join(seq_home,f))]
         seq_list.sort()
     elif dataset_name == 'VTUAVST':

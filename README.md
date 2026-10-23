@@ -1,162 +1,110 @@
-# Visual Prompt Multi-Modal Tracking [CVPR2023]
-Official implementation of [**ViPT**](https://arxiv.org/abs/2303.10826), including models and training&testing codes.
+# Federated RGB-X Tracking with Group-Specific Prompt Aggregation
 
-[Models & Raw Results](https://drive.google.com/drive/folders/1RCuJjkOalP4-CNicgfdN_A9-K1H3GndI?usp=sharing)
-(Google Driver)
-[Models & Raw Results](https://pan.baidu.com/s/1ipKVj_CMjJ-u4cJAxXAWnw?pwd=vipt)
-(Baidu Driver: vipt)
+Code for **Fed-MAPTrack**: prompt-based federated RGB-X tracking built on the frozen
+[ViPT](https://github.com/jiawen-zhu/ViPT) tracker. Only ViPT's prompt parameters are trained and exchanged
+(about 0.84 M of 93 M parameters). Twelve simulated clients hold RGB-T (LasHeR), RGB-D (DepthTrack) and RGB-E (VisEvent)
+videos; one client per dataset has no auxiliary sensor (RGB-only). The server keeps each group of prompt parameters
+in the aggregation domain that fits its role:
 
-<center><img width="75%" alt="" src="assets/abs.png"/></center>
+| group | what it consumes | tensors (params) |
+|---|---|---|
+| `aux_specific` | the auxiliary modality (thermal / depth / event) | 664,416 |
+| `rgb_shared` | the RGB half | 73,836 |
+| `fusion` | the fused RGB + auxiliary features | 82,944 |
+| `norm` | normalisation shared by construction | 18,432 |
 
-:fire::fire::fire: This work proposes ViPT, a new prompt-tuning framework for multi-modal tracking.
+This repository also contains the federated baselines used in the paper's comparison, so that every row can be rerun
+from one code base.
 
-- Tracking in RGB + Depth scenarios:
+> This is a research code base, forked from ViPT (MIT licence, see `LICENSE`). The original ViPT README is kept in
+> `README_ViPT.md`. The federated layer lives in `lib/federated/`.
 
+## What is where
 
-  <center><img width="75%" alt="" src="assets/rgbd_demo.gif"/></center>
+| path | content |
+|---|---|
+| `lib/federated/server.py` | the federated server: variants, rounds, aggregation, checkpoint export |
+| `lib/federated/client.py` | one client's local training (uses ViPT's official actor and loss, unchanged) |
+| `lib/federated/aggregator.py` | mask-aware, group-aware aggregation (rules R1-R6 are documented in the file) |
+| `lib/federated/param_groups.py` | which tensor belongs to which group |
+| `lib/federated/personalized.py` | aggregation maths of the FedMSplit-P and FED-PRIME baselines |
+| `lib/federated/test_*.py` | unit tests (plain scripts, no pytest needed) |
+| `configs/fed/client_splits/` | the client partition used in the paper (`..._seed42_v2.json`) |
+| `scripts/eval/` | evaluation helpers (LasHeR scorer, VisEvent scorer) |
+| `docs/` | how the two newest baselines are adapted, and how this tree was merged from the development branches |
+| `experiments/vipt/` | ViPT configs; `deep_*_prime.yaml` are the configs for FED-PRIME checkpoints |
 
-- Tracking in RGB + Thermal scenarios:
+## Variants (`--variant`)
 
+| row in the paper's Table 1 | command-line arguments |
+|---|---|
+| Local | `--variant local` |
+| FedAvg | `--variant fedavg` |
+| FedProx | `--variant fedprox --prox-mu 0.01` |
+| FedPer | `--variant fedper` |
+| Ditto | `--variant ditto --ditto-lambda 0.1` |
+| FedMSplit-P | `--variant fedmsplit_p` |
+| FED-PRIME | `--variant fedprime` |
+| Independent FL | `--variant modality --clients <the four clients of one dataset>` (one run per dataset) |
+| Fed-MAPTrack (aux-specific buckets only) | `--variant modality` |
+| Fed-MAPTrack (all three groups bucketed, RGB-only clients participate) | `--variant modality --bucket-groups aux_specific,fusion,norm` |
+| **Fed-MAPTrack** (selective participation, the final method) | `--variant modality --bucket-groups aux_specific,fusion,norm --selective-participation` |
 
-  <center><img width="75%" alt="" src="assets/rgbt_demo.gif"/></center>
+Common arguments of every reported run: `--rounds 120 --local-steps 50 --workers 0 --clients-per-round 1.0
+--save-every 20 --export-at-end`, seeds 42 / 0 / 123.
 
+FedMSplit-P and FED-PRIME are the prompt-tuning baselines of Phung et al. (ICCV 2025), adapted from image-text
+classification to ViPT. They are adapted references, not exact reproductions; every deviation from the original method
+is listed in `docs/NEW_BASELINES.md`.
 
-- Tracking in RGB + Event scenarios:
+## Setup
 
+1. Install the ViPT environment (`install_vipt.sh`, PyTorch 2.5.1 / CUDA 12.4 was used).
+2. Download the pretrained tracker `OSTrack_ep0300.pth.tar` as described in `README_ViPT.md` and put it in `pretrained/`.
+3. Download LasHeR, DepthTrack and VisEvent yourself (this repository ships no data) and point the code at them:
 
-  <center><img width="75%" alt="" src="assets/rgbe_demo.gif"/></center>
+   ```
+   export CVR_ROOT=/path/to/workdir          # default: the repository directory
+   export CVR_DATA=/path/to/workdir/data     # default: $CVR_ROOT/data
+   ```
+   Expected layout: `data/lasher/trainingset`, `data/depthtrack/train`, `data/visevent/train_subset`
+   (plus `trainlist.txt` for VisEvent) and the matching test sets (see `lib/test/evaluation/local.py`).
+4. The client partition `configs/fed/client_splits/lasher_depthtrack_visevent_seed42_v2.json` fixes which sequences each
+   of the twelve clients owns; its fingerprint is written into every run's `run_config.json`.
 
-## News
-**[Mar 20, 2023]**
-- We release codes, models and raw results. \
-Thanks for your star :stuck_out_tongue_closed_eyes::stuck_out_tongue_closed_eyes::stuck_out_tongue_closed_eyes:.
-
-**[Feb 28, 2023]**
-
-- ViPT is accepted to CVPR2023.
-
-## Introduction
-- :fire: A new unified visual prompt multi-modal tracking framework (e.g. RGB-D, RGB-T, and RGB-E Tracking).
-
-- ViPT has high performance on multiple multi-modal tracking tasks.
-
-- ViPT is with high parameter-efficient tuning, containing only 0.84M trainable parameters (<1%).
-
-- We expect ViPT can attract more attention to prompt learning :fire: for further research of multi-modal tracking.
-
-<center><img width="90%" alt="" src="assets/framework.png"/></center>
-
-## Results
-### On RGB-D tracking benchmarks
-<center><img width="90%" alt="" src="assets/results_rgbd.PNG"/></center>
-
-### On RGB-T tracking benchmarks
-<center><img width="90%" alt="" src="assets/results_lasher.png"/></center>
-<center><img width="90%" alt="" src="assets/results_rgbt234.png"/></center>
-
-### On RGB-E tracking benchmark
-<center><img width="90%" alt="" src="assets/results_rgbe.png"/></center>
-
-## Usage
-### Installation
-Create and activate a conda environment:
-```
-conda create -n vipt python=3.7
-conda activate vipt
-```
-Install the required packages:
-```
-bash install_vipt.sh
-```
-
-### Data Preparation
-Put the training datasets in ./data/. It should look like:
-```
-$<PATH_of_ViPT>
--- data
-    -- DepthTrackTraining
-        |-- adapter02_indoor
-        |-- bag03_indoor
-        |-- bag04_indoor
-        ...
-    -- LasHeR/train/trainingset
-        |-- 1boygo
-        |-- 1handsth
-        ...
-    -- VisEvent/train
-        |-- 00142_tank_outdoor2
-        |-- 00143_tank_outdoor2
-        ...
-        |-- trainlist.txt
-```
-
-### Path Setting
-Run the following command to set paths:
-```
-cd <PATH_of_ViPT>
-python tracking/create_default_local_file.py --workspace_dir . --data_dir ./data --save_dir ./output
-```
-You can also modify paths by these two files:
-```
-./lib/train/admin/local.py  # paths for training
-./lib/test/evaluation/local.py  # paths for testing
-```
-
-### Training
-Dowmload the pretrained [foundation model](https://drive.google.com/drive/folders/1ttafo0O5S9DXK2PX0YqPvPrQ-HWJjhSy?usp=sharing) (OSTrack) 
-and put it under ./pretrained/.
-```
-bash train_vipt.sh
-```
-You can train models with various modalities and variants by modifying ```train_vipt.sh```.
-
-### Testing
-#### For RGB-D benchmarks
-[DepthTrack Test set & VOT22_RGBD]\
-These two benchmarks are evaluated using [VOT-toolkit](https://github.com/votchallenge/toolkit). \
-You need to put the DepthTrack test set to```./Depthtrack_workspace/``` and name it 'sequences'.\
-You need to download the corresponding test sequences at```./vot22_RGBD_workspace/```.
+## Train
 
 ```
-bash eval_rgbd.sh
+python lib/federated/server.py --variant modality --bucket-groups aux_specific,fusion,norm \
+    --selective-participation --rounds 120 --local-steps 50 --workers 0 \
+    --clients-per-round 1.0 --save-every 20 --export-at-end --seed 42 --out-dir output/fed/fed_maptrack_s42
 ```
 
-#### For RGB-T benchmarks
-[LasHeR & RGBT234] \
-Modify the <DATASET_PATH> and <SAVE_PATH> in```./RGBT_workspace/test_rgbt_mgpus.py```, then run:
-```
-bash eval_rgbt.sh
-```
-We refer you to [LasHeR Toolkit](https://github.com/BUGPLEASEOUT/LasHeR) for LasHeR evaluation, 
-and refer you to [MPR_MSR_Evaluation](https://sites.google.com/view/ahutracking001/) for RGBT234 evaluation.
+`--dry-run` prints the round plan without training. A 120-round run (12 clients, 50 local steps) takes about 17-20 hours
+on one RTX 4080 SUPER / 4090.
 
+Personalised baselines (Local, FedPer, Ditto, FedMSplit-P, FED-PRIME) export one checkpoint per sensor client
+(`ViPTrack_<client>_ep0120.pth.tar`); the other methods export one checkpoint per modality.
 
-#### For RGB-E benchmark
-[VisEvent]\
-Modify the <DATASET_PATH> and <SAVE_PATH> in```./RGBE_workspace/test_rgbe_mgpus.py```, then run:
-```
-bash eval_rgbe.sh
-```
-We refer you to [VisEvent_SOT_Benchmark](https://github.com/wangxiao5791509/VisEvent_SOT_Benchmark) for evaluation.
+## Evaluate
 
+Exported checkpoints load into the unchanged ViPT tracker. Evaluate the final round (120) only. Personalised methods are
+scored per sensor client and averaged over the three clients of each benchmark. FED-PRIME checkpoints contain two extra
+token pools and need the matching config: use `--yaml_name deep_rgbt_prime / deep_rgbd_prime / deep_rgbe_prime`.
 
-## Bixtex
-If you find ViPT is helpful for your research, please consider citing:
+* LasHeR: `RGBT_workspace/test_rgbt_mgpus.py`, then `scripts/eval/lasher_eval.py` (needs the LasHeR toolkit in `tools/LasHeR_Toolkit`)
+* VisEvent: `RGBE_workspace/test_rgbe_mgpus.py`, then `scripts/eval/visevent_eval.py` (needs the VisEvent benchmark toolkit in `tools/VisEvent_SOT_Benchmark`)
+* DepthTrack: `Depthtrack_workspace/run_offline_depthtrack.py`, then the VOT toolkit's analysis (F-score)
 
-```bibtex
-@inproceedings{ViPT,
-  title={Visual Prompt Multi-Modal Tracking},
-  author={Jiawen, Zhu and Simiao, lai and Xin, Chen and Dong, Wang and Huchuan, Lu},
-  booktitle={CVPR},
-  year={2023}
-}
-```
+## Reproducibility notes
 
-## Acknowledgment
-- This repo is based on [OSTrack](https://github.com/botaoye/OSTrack) which is an excellent work.
-- We thank for the [PyTracking](https://github.com/visionml/pytracking) library, which helps us to quickly implement our ideas.
+* All paper numbers are mean +- sample standard deviation over three seeds at round 120 (see the paper).
+* Single-GPU evaluation of the same checkpoint on two different GPU models differs by up to about 1 point on LasHeR;
+  expect numbers of that order, not bit-exact agreement, when you rerun on other hardware.
+* Everything not trained (the 92.5 M backbone) is identical across runs.
+* `python lib/federated/test_server.py` (and the other `test_*.py` files) must pass before trusting a modification.
 
-## Contact
-If you have any question, feel free to email jiawen@mail.dlut.edu.cn. ^_^
+## Licence and acknowledgements
 
-
+MIT, see `LICENSE`. The tracker, training and evaluation code are from ViPT (Zhu et al., CVPR 2023), which builds on
+OSTrack. The prompt-tuning baselines follow Phung et al. (ICCV 2025) and Chen and Zhang (KDD 2022).

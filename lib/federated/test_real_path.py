@@ -87,7 +87,7 @@ def test_toy07_and_v2_split():
     idx = ds.sequence_list.index("toy07_indoor_320")
     info = ds.get_sequence_info(idx)
     assert len(info["bbox"]) == 1367
-    assert count_frames(os.path.join(r"D:\cvresearch\data\depthtrack\train", "toy07_indoor_320"), "groundtruth.txt") == 1367
+    assert count_frames(os.path.join(os.environ.get("CVR_DATA", os.path.join(os.environ.get("CVR_ROOT", REPO), "data")), "depthtrack", "train", "toy07_indoor_320"), "groundtruth.txt") == 1367
     old = json.load(open(os.path.join(REPO, "configs/fed/client_splits/lasher_depthtrack_visevent_seed42.json"), encoding="utf-8"))
     oldc = next(x for x in old["clients"] if x["client_id"] == "rgbd_001")
     assert oldc["num_samples"] - c["num_samples"] == 39

@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from lib.test.evaluation import Tracker
 from lib.train.dataset.depth_utils import get_rgbd_frame
 
-ROOT=Path(r'D:\cvresearch\data\depthtrack\test'); OUT=Path(__file__).parent/'offline_results'
+ROOT=Path(os.environ.get('CVR_DATA', os.path.join(os.environ.get('CVR_ROOT', str(Path(__file__).parents[1])), 'data'))) / 'depthtrack' / 'test'; OUT=Path(__file__).parent/'offline_results'
 def run(yaml_name, checkpoint=None, output_dir=None, sequence=None, config_yaml=None):
     torch.set_num_threads(1)
     # 2026-10-18: config_yaml picks the experiments/vipt/<name>.yaml to build the model from, while yaml_name stays the

@@ -124,10 +124,11 @@ if __name__ == '__main__':
     seq_list = None
     if dataset_name == 'VisEvent':
         # 2026-09-26: localize the author script without changing inference.
-        seq_home = args.seq_home or r'D:\cvresearch\data\visevent\test_subset'
+        _root = os.environ.get('CVR_ROOT', abspath(join(dirname(__file__), '..')))
+        seq_home = args.seq_home or join(os.environ.get('CVR_DATA', join(_root, 'data')), 'visevent', 'test_subset')
         list_path = join(seq_home, 'testlist.txt')
         if not os.path.exists(list_path):
-            list_path = r'D:\cvresearch\tools\VisEvent_SOT_Benchmark\sequence_evaluation_config\VisEvent_testing_subset.txt'
+            list_path = join(_root, 'tools', 'VisEvent_SOT_Benchmark', 'sequence_evaluation_config', 'VisEvent_testing_subset.txt')
         with open(list_path, 'r') as f:
             seq_list = f.read().splitlines()
         seq_list.sort()

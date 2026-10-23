@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import traceback
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -68,7 +69,7 @@ def test_unknown_dataset_is_rejected():
 
 def test_bad_root_is_rejected():
     try:
-        build_dataset("lasher", root=r"D:\cvresearch\data\does_not_exist")
+        build_dataset("lasher", root=os.path.join(tempfile.gettempdir(), "does_not_exist_cvr"))
     except ClientDataError:
         return
     raise AssertionError("nonexistent root was accepted")
