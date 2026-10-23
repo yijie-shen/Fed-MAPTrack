@@ -335,6 +335,9 @@ class StubClient:
 
     def __init__(self, cid, aux, n, value):
         self.client_id, self.aux_type, self.num_samples = cid, aux, n
+        # the merged server asks every client for its dataset bucket (bucketgroups)
+        self.dataset_name = {'thermal': 'lasher', 'depth': 'depthtrack',
+                             'event': 'visevent'}.get(aux, 'lasher')
         self.value = float(value)
         self.seen = []                  # (round, dispatched, prox_anchor)
 
