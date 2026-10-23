@@ -113,6 +113,7 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', default=60, type=int, help='epochs of ckpt')
     parser.add_argument('--mode', default='parallel', type=str, help='running mode: [sequential , parallel]')
     parser.add_argument('--debug', default=0, type=int, help='to vis tracking results')
+    parser.add_argument('--seq_home', type=str, default='', help='Local VisEvent test-subset directory.')
     parser.add_argument('--video', type=str, default='', help='Sequence name for debug.')
     args = parser.parse_args()
 
@@ -122,8 +123,12 @@ if __name__ == '__main__':
     # path initialization
     seq_list = None
     if dataset_name == 'VisEvent':
-        seq_home = '/media/jiawen/Datasets/Tracking/DATASET/VisEvent/test'
-        with open(join(seq_home, 'testlist.txt'), 'r') as f:
+        # 2026-09-26: localize the author script without changing inference.
+        seq_home = args.seq_home or r'D:\cvresearch\data\visevent\test_subset'
+        list_path = join(seq_home, 'testlist.txt')
+        if not os.path.exists(list_path):
+            list_path = r'D:\cvresearch\tools\VisEvent_SOT_Benchmark\sequence_evaluation_config\VisEvent_testing_subset.txt'
+        with open(list_path, 'r') as f:
             seq_list = f.read().splitlines()
         seq_list.sort()
     else:
