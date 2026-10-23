@@ -57,7 +57,7 @@ from lib.federated.aggregator import (  # noqa: E402
 )
 from lib.federated.client import FederatedClient, seed_everything  # noqa: E402
 from lib.federated.client_data import load_split  # noqa: E402
-from lib.federated.param_groups import build_param_groups  # noqa: E402
+from lib.federated.param_groups import AUX_SPECIFIC, build_param_groups  # noqa: E402
 from lib.federated.warmup import WarmupScheduler  # noqa: E402
 
 DEFAULT_SPLIT = os.path.join(
@@ -82,6 +82,9 @@ VARIANTS = OrderedDict(
     modality=(True, False, True),
     ours=(True, True, True),
     fedprox=(False, False, True),
+    # FedPer: all non-auxiliary prompt groups are FedAvg shared; the
+    # auxiliary prompt group stays private to each sensor client.
+    fedper=(False, False, True),
 )
 
 
@@ -135,6 +138,20 @@ class FederatedServer:
              {cid: make_initial_state(net.state_dict(), self.param_groups,
                                      aux_types=self.aux_types, bucket_groups=self.bucket_groups)
              for cid in self.clients} if variant == "local" else None)
+        # Unlike `local`, FedPer has one global shared state.  It only keeps
+        # aux_specific tensors private, one initialised copy per sensor client.
+        # RGB-only clients deliberately have no entry: their dispatch is always
+        # `initial_aux`, the project-wide missing-modality contract.
+        self.fedper_aux_states = (
+            {cid: OrderedDict((k, v.detach().clone())
+                              for k, v in self.state.initial_aux.items())
+             for cid, client in self.clients.items()
+             if client.aux_type != NO_AUX}
+            if variant == "fedper" else None)
+        if self.fedper_aux_states is not None:
+            # Per-modality banks are not part of FedPer state.  Keeping them
+            # would make a stale modality-level copy look authoritative.
+            self.state.per_modality = {}
 
         self.scheduler = (WarmupScheduler.default(num_rounds) if self.use_warmup
                           else WarmupScheduler.no_warmup(
@@ -226,7 +243,7 @@ class FederatedServer:
             client = self.clients[cid]
             src = (self.local_states[cid] if self.local_states is not None
                    else self.state)
-            dispatched = src.view_for(client.aux_type, self.bucket_for(client))
+            dispatched = self._dispatch(cid, client, src)
             update, stats = client.local_train(
                 self.net, dispatched, plan, round_idx,
                 local_steps=self.local_steps, device=self.device)
@@ -243,6 +260,14 @@ class FederatedServer:
                     bank = src.per_modality.get(client.aux_type)
                     if bank is not None and k_ in bank:
                         bank[k_] = v.detach().clone()
+            elif self.fedper_aux_states is not None and client.aux_type != NO_AUX:
+                # A private tensor is replaced only by its own valid upload;
+                # it is never included in a cross-client reduction.
+                private = self.fedper_aux_states[cid]
+                for k_, v in update.state.items():
+                    if (self.param_groups.get(k_) == AUX_SPECIFIC
+                            and update.provides(k_)):
+                        private[k_] = v.detach().clone()
             if self.verbose:
                 print("    %-11s loss %.4f  IoU %.4f  aux %.2f"
                       % (cid, stats.get("mean_Loss/total", float("nan")),
@@ -265,8 +290,15 @@ class FederatedServer:
             # ceiling: fedavg stays pooled no matter what a phase asks for.
             self.aggregator.modality_aware = (
                 self.modality_aware and plan.modality_aware)
+            aggregation_updates = updates
+            if self.fedper_aux_states is not None:
+                # Do not let the FedAvg degradation path see aux_specific at
+                # all.  It therefore aggregates precisely the three shared
+                # groups, while the loop above retained each private upload.
+                aggregation_updates = [self._without_private_aux(u)
+                                       for u in updates]
             self.state, agg_stats = self.aggregator.aggregate(
-                self.state, updates, round_idx=round_idx, phase=plan)
+                self.state, aggregation_updates, round_idx=round_idx, phase=plan)
             agg_summary = agg_stats.group_summary()
             self._last_agg_stats = agg_stats
 
@@ -295,6 +327,12 @@ class FederatedServer:
         record["rgb_only_weight"] = self.rgb_only_weight
         record["prox_mu"] = self.prox_mu
         record["variant"] = self.variant
+        if self.fedper_aux_states is not None:
+            record["aux_specific"] = {
+                "aggregation": "private_per_client",
+                "private_clients": sorted(self.fedper_aux_states),
+                "cross_client_aggregation": False,
+            }
         record["seed"] = self.seed
         record["selected"] = chosen
         record["local_steps"] = self.local_steps
@@ -308,6 +346,24 @@ class FederatedServer:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return record
+
+    def _dispatch(self, client_id, client, source):
+        if self.fedper_aux_states is None:
+            return source.view_for(client.aux_type, self.bucket_for(client))
+        out = OrderedDict(source.shared)
+        if client.aux_type == NO_AUX:
+            out.update(source.initial_aux)
+        else:
+            out.update(self.fedper_aux_states[client_id])
+        return out
+
+    def _without_private_aux(self, update):
+        state = OrderedDict((k, v) for k, v in update.state.items()
+                            if self.param_groups.get(k) != AUX_SPECIFIC)
+        mask = None if update.param_mask is None else OrderedDict(
+            (k, v) for k, v in update.param_mask.items() if k in state)
+        return type(update)(update.client_id, update.num_samples, update.aux_type,
+                            state, mask, update.reliability)
 
     def run(self, start=0, save_every=10):
         if self.verbose:
@@ -341,6 +397,11 @@ class FederatedServer:
                 cid: state.to_flat_dict()
                 for cid, state in self.local_states.items()
             }
+        if self.fedper_aux_states is not None:
+            blob["fedper_aux_states"] = {
+                cid: OrderedDict((k, v.detach().clone()) for k, v in state.items())
+                for cid, state in self.fedper_aux_states.items()
+            }
         torch.save(blob, path)
         return path
 
@@ -349,8 +410,12 @@ class FederatedServer:
 
         Bucket selection is part of the state contract: accepting a checkpoint
         made with another layout would silently dispatch the wrong tensors.
+        The variant is part of it too (FedPer keeps private auxiliary tensors).
         """
         blob = torch.load(path, map_location="cpu", weights_only=False)
+        if blob.get("variant") != self.variant:
+            raise ValueError("checkpoint variant %r does not match %r" %
+                             (blob.get("variant"), self.variant))
         saved_groups = tuple(blob.get("bucket_groups", ("aux_specific",)))
         if saved_groups != self.bucket_groups:
             raise ValueError("checkpoint bucket_groups %r != run %r" %
@@ -363,6 +428,11 @@ class FederatedServer:
         if self.local_states is not None and "local_states" in blob:
             self.local_states = {cid: GlobalState.from_flat_dict(state)
                                  for cid, state in blob["local_states"].items()}
+        if self.fedper_aux_states is not None:
+            self.fedper_aux_states = {
+                cid: OrderedDict((k, v.detach().clone()) for k, v in state.items())
+                for cid, state in blob["fedper_aux_states"].items()
+            }
         return int(blob["round"])
 
     def export_checkpoint(self, round_idx, aux_type=None, out_dir=None,
@@ -388,6 +458,18 @@ class FederatedServer:
                 client_ids = list(self.clients)
             targets = [(cid, self.clients[cid].aux_type,
                         self.local_states[cid]) for cid in client_ids]
+        elif self.fedper_aux_states is not None:
+            if client_id is not None:
+                if client_id not in self.fedper_aux_states:
+                    raise KeyError("unknown FedPer sensor client: %s" % client_id)
+                client_ids = [client_id]
+            elif aux_type is not None:
+                client_ids = [cid for cid, client in self.clients.items()
+                              if client.aux_type == aux_type and cid in self.fedper_aux_states]
+            else:
+                client_ids = list(self.fedper_aux_states)
+            targets = [(cid, self.clients[cid].aux_type, self.state)
+                       for cid in client_ids]
         else:
             aux_types = ([aux_type] if aux_type else
                          (list(self.aux_types) or [NO_AUX]))
@@ -397,7 +479,8 @@ class FederatedServer:
         for cid, aux, source in targets:
             sd = OrderedDict((k, v.detach().clone())
                              for k, v in self.frozen_reference.items())
-            view = source.view_for(aux)
+            view = (self._dispatch(cid, self.clients[cid], source)
+                    if self.fedper_aux_states is not None else source.view_for(aux))
             missing = [k for k in view if k not in sd]
             if missing:
                 raise KeyError("aggregated keys absent from the model: %s"
