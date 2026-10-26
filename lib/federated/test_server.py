@@ -888,6 +888,87 @@ def test_alpha_zero_system_endpoint_with_missing_modality_and_export():
     assert paths and all(os.path.isfile(p) for p in paths)
 
 
+def test_cli_resume_continues_bit_for_bit_and_logs_each_round_once():
+    """--resume: state, round log and param stats match an uninterrupted run,
+    even when the interrupted run had already logged rounds past its last
+    saved state (they are recomputed, not duplicated)."""
+    groups = ("aux_specific", "fusion", "norm")
+
+    def clients():
+        return [StubClient("rgbd_s", "depth", 100, 9, "depthtrack"),
+                StubClient("rgbd_r", NO_AUX, 100, 13, "depthtrack"),
+                StubClient("rgbd_t", "depth", 300, 4, "depthtrack")]
+
+    full, _ = _server("modality", clients=clients(), bucket_groups=groups,
+                      selective_participation=True, num_rounds=4)
+    full.run(save_every=0)
+
+    cut, _ = _server("modality", clients=clients(), bucket_groups=groups,
+                     selective_participation=True, num_rounds=4)
+    cut.run_round(0)
+    cut.run_round(1)
+    path = cut.save_state(2)
+    cut.run_round(2)            # logged, but past the saved state: "crash" here
+
+    res = FederatedServer(StubNet(), clients(), cfg=None, settings=None,
+                          variant="modality", bucket_groups=groups,
+                          selective_participation=True, num_rounds=4,
+                          local_steps=3, verbose=False, device="cpu",
+                          out_dir=cut.out_dir, resume=True)
+    start = res.load_state(path)
+    res.truncate_logs(start)
+    res.run(start=start, save_every=0)
+
+    a, b = full.state.to_flat_dict(), res.state.to_flat_dict()
+    assert a.keys() == b.keys()
+    for k in a:
+        assert torch.equal(a[k], b[k]), k
+
+    def rounds(server):
+        with open(server.log_path, encoding="utf-8") as f:
+            return [json.loads(ln)["round"] for ln in f if ln.strip()]
+
+    assert rounds(full) == rounds(res) == [0, 1, 2, 3]
+    n = lambda srv: sum(1 for ln in open(srv.param_stats_path, encoding="utf-8") if ln.strip())
+    assert n(full) == n(res)
+    assert os.path.exists(os.path.join(cut.out_dir, "run_config.resume1.json"))
+    assert os.path.exists(os.path.join(cut.out_dir, "run_config.json"))
+
+
+def test_non_resume_still_refuses_a_used_directory():
+    s, _ = _server("fedavg")
+    s.run_round(0)
+    try:
+        FederatedServer(StubNet(), [StubClient("a", "thermal", 1, 1.0)], cfg=None,
+                        settings=None, variant="fedavg", out_dir=s.out_dir,
+                        device="cpu", verbose=False)
+    except RuntimeError:
+        return
+    raise AssertionError("a used output directory was accepted without resume")
+
+
+def test_single_sensor_federation_modality_equals_fedavg():
+    """With ONE sensor type (DepthTrack-only federation, incl. an RGB-only
+    client) the bucketed `modality` aggregation and plain FedAvg dispatch the
+    same tensors to every client in every round, so the independent-depth run
+    is the FedAvg run of that federation."""
+    def clients():
+        return [StubClient("rgbd_s1", "depth", 100, 9, "depthtrack"),
+                StubClient("rgbd_r", NO_AUX, 150, 13, "depthtrack"),
+                StubClient("rgbd_s2", "depth", 300, 4, "depthtrack")]
+    fa, _ = _server("fedavg", clients=clients(), num_rounds=3)
+    mo, _ = _server("modality", clients=clients(), num_rounds=3)
+    for r in range(3):
+        fa.run_round(r)
+        mo.run_round(r)
+        for cid, c in fa.clients.items():
+            a = fa._dispatch(cid, c, fa.state)
+            b = mo._dispatch(cid, mo.clients[cid], mo.state)
+            assert a.keys() == b.keys()
+            for k in a:
+                assert torch.equal(a[k], b[k]), (r, cid, k)
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

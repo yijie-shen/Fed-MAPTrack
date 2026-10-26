@@ -110,7 +110,8 @@ class FederatedServer:
                  modality_alpha=1.0, rgb_only_weight=1.0, prox_mu=None,
                  split_path=None, bucket_groups=("aux_specific",),
                  selective_participation=False, ditto_lambda=0.1,
-                 prime_sim_scalar=None, prime_outer_loops=None):
+                 prime_sim_scalar=None, prime_outer_loops=None, resume=False):
+        self.resume = bool(resume)
         if variant not in VARIANTS:
             raise ValueError("variant must be one of %s" % list(VARIANTS))
         self.net = net
@@ -135,8 +136,9 @@ class FederatedServer:
         self.out_dir = out_dir or os.path.join(
             _REPO, "output", "fed", "%s_seed%d" % (variant, seed))
         os.makedirs(self.out_dir, exist_ok=True)
-        if os.path.exists(os.path.join(self.out_dir, "round_metrics.jsonl")) or \
-           any(n.startswith("fed_state_") for n in os.listdir(self.out_dir)):
+        if not self.resume and (
+                os.path.exists(os.path.join(self.out_dir, "round_metrics.jsonl")) or
+                any(n.startswith("fed_state_") for n in os.listdir(self.out_dir))):
             raise RuntimeError("refusing to reuse non-empty federated output directory")
         self.run_id = "%s-%d-%d" % (variant, seed, int(time.time() * 1000))
 
@@ -258,7 +260,14 @@ class FederatedServer:
         if split_path and os.path.isfile(split_path):
             with open(split_path, encoding="utf-8") as sf:
                 split_doc = json.load(sf)
-        with open(os.path.join(self.out_dir, "run_config.json"), "w", encoding="utf-8") as f:
+        # a resumed run keeps the original run_config.json; its own goes beside it
+        cfg_name = "run_config.json"
+        if self.resume and os.path.exists(os.path.join(self.out_dir, cfg_name)):
+            n = 1
+            while os.path.exists(os.path.join(self.out_dir, "run_config.resume%d.json" % n)):
+                n += 1
+            cfg_name = "run_config.resume%d.json" % n
+        with open(os.path.join(self.out_dir, cfg_name), "w", encoding="utf-8") as f:
             json.dump({"run_id": self.run_id, "variant": variant, "seed": seed,
                        "local_steps": self.local_steps, "modality_alpha": self.modality_alpha,
                        "bucket_groups": list(self.bucket_groups),
@@ -536,6 +545,34 @@ class FederatedServer:
         self.pers_info = OrderedDict(info)
         return info
 
+    def truncate_logs(self, start):
+        """Drop log lines of rounds >= start (written after the last saved state
+        and about to be recomputed), so a resumed log has each round once.
+
+        param_group_stats.jsonl has no round field; each round contributes one
+        line per (bank, tensor) entry, which round_metrics records as the sum of
+        the aggregation summary's `tensors`.
+        """
+        keep, n_stats = [], 0
+        if os.path.exists(self.log_path):
+            with open(self.log_path, encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    if int(rec["round"]) < start:
+                        keep.append(line.rstrip() + "\n")
+                        n_stats += sum(g["tensors"] for g in
+                                       (rec.get("aggregation") or {}).values()
+                                       if isinstance(g, dict) and "tensors" in g)
+            with open(self.log_path, "w", encoding="utf-8", newline="\n") as f:
+                f.writelines(keep)
+        if os.path.exists(self.param_stats_path):
+            with open(self.param_stats_path, encoding="utf-8") as f:
+                lines = [ln.rstrip() + "\n" for ln in f if ln.strip()]
+            with open(self.param_stats_path, "w", encoding="utf-8", newline="\n") as f:
+                f.writelines(lines[:n_stats])
+
     def run(self, start=0, save_every=10):
         if self.verbose:
             print("variant=%s  modality_aware=%s  warmup=%s  aggregate=%s"
@@ -796,6 +833,9 @@ def main(argv=None):
     p.add_argument("--out-dir", default="")
     p.add_argument("--save-every", type=int, default=10)
     p.add_argument("--export-at-end", action="store_true")
+    p.add_argument("--resume", default="",
+                   help="continue from this fed_state_rXXXX.pt in --out-dir "
+                        "(bit-identical to an uninterrupted run)")
     p.add_argument("--dry-run", action="store_true",
                    help="print the round plan and the selection, train nothing")
     args = p.parse_args(argv)
@@ -837,8 +877,14 @@ def main(argv=None):
         split_path=args.split,
         num_rounds=args.rounds, clients_per_round=args.clients_per_round,
         local_steps=args.local_steps, seed=args.seed,
-        out_dir=args.out_dir or None, device=args.device)
-    server.run(save_every=args.save_every)
+        out_dir=args.out_dir or None, device=args.device,
+        resume=bool(args.resume))
+    start = 0
+    if args.resume:
+        start = server.load_state(args.resume)
+        server.truncate_logs(start)
+        print("resumed from %s at round %d" % (args.resume, start))
+    server.run(start=start, save_every=args.save_every)
     if args.export_at_end:
         for path in server.export_checkpoint(args.rounds):
             print("exported %s" % path)
