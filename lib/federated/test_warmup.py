@@ -3,7 +3,7 @@
 """
 Unit tests for warmup.py.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_warmup.py
+    python lib/federated/test_warmup.py
 
 A wrong schedule does not crash. It quietly trains the wrong tensors for 30
 rounds and the only symptom is a slightly worse final number, which is

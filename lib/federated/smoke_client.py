@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Smoke test for client.py: one client, a few real local steps.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/smoke_client.py
+    python lib/federated/smoke_client.py
 
 Real model, real data, real loss. The point is to prove the whole local path
 runs and that the upload has the right SHAPE -- not to reach any accuracy.

@@ -3,7 +3,7 @@
 """
 End-to-end check that the three P0 pieces actually fit together.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/check_integration.py
+    python lib/federated/check_integration.py
 
 No training and no GPU: local "training" is replaced by a deterministic
 perturbation of the dispatched tensors. What is being verified is the PLUMBING

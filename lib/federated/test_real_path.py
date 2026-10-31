@@ -1,6 +1,6 @@
 """Slow Stage-A checks on the real ViPT model and real client data.
 
-Run with: D:\\Conda\\envs\\sdstrack\\python.exe lib\\federated\\test_real_path.py
+Run with: python lib\\federated\\test_real_path.py
 """
 from __future__ import annotations
 import json, os, sys, tempfile

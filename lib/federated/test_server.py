@@ -3,7 +3,7 @@
 """
 Unit tests for server.py.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_server.py
+    python lib/federated/test_server.py
 
 No GPU, no real model, no data -- runs in well under a second.
 

@@ -10,7 +10,7 @@
  "split_level": "sequence",
  "datasets": {
   "depthtrack": {
-   "root": "D:\\cvresearch\\data\\depthtrack\\train",
+   "root": "data/depthtrack/train",
    "aux_type": "depth",
    "n_sequences": 146,
    "n_frames": 209913

@@ -11,19 +11,19 @@
   "split_level": "sequence",
   "datasets": {
     "lasher": {
-      "root": "D:\\cvresearch\\data\\lasher\\trainingset",
+      "root": "data/lasher/trainingset",
       "aux_type": "thermal",
       "n_sequences": 881,
       "n_frames": 459122
     },
     "depthtrack": {
-      "root": "D:\\cvresearch\\data\\depthtrack\\train",
+      "root": "data/depthtrack/train",
       "aux_type": "depth",
       "n_sequences": 146,
       "n_frames": 209952
     },
     "visevent": {
-      "root": "D:\\cvresearch\\data\\visevent\\train_subset",
+      "root": "data/visevent/train_subset",
       "aux_type": "event",
       "n_sequences": 500,
       "n_frames": 212062

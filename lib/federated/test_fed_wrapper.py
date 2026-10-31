@@ -3,7 +3,7 @@
 """
 Unit tests for fed_wrapper.py.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_fed_wrapper.py
+    python lib/federated/test_fed_wrapper.py
 
 Builds the REAL ViPT model on CPU. The central acceptance criterion from spec
 section 16 is "forward, loss and logging must not fail when template_aux/search_aux is None",

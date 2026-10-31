@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Tests for the FedMSplit-P and FED-PRIME baselines (added 2026-10-16).
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_personalized.py
+    python lib/federated/test_personalized.py
 
 Four layers, cheapest first:
   1. FedMSplit-P aggregation arithmetic (hand-computed)

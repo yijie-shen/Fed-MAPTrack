@@ -4,7 +4,7 @@
 Unit tests for param_groups.py and aggregator.py.
 
 Runs standalone (no pytest needed):
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_aggregator.py
+    python lib/federated/test_aggregator.py
 
 Each test checks one rule from aggregator.py's docstring. Where a rule exists
 to prevent a specific silent failure, there is also a NEGATIVE test showing the

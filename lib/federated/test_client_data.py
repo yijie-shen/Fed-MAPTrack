@@ -3,7 +3,7 @@
 """
 Unit tests for client_data.py.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_client_data.py
+    python lib/federated/test_client_data.py
 
 Uses the REAL datasets on disk and the REAL client_splits.json. A stub would
 prove nothing here: the whole point of this module is that the three official

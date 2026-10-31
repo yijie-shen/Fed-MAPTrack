@@ -3,7 +3,7 @@
 """
 Unit tests for split_builder.py (pure functions, no dataset needed).
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/test_split_builder.py
+    python lib/federated/test_split_builder.py
 
 The split is the one artefact every later experiment depends on, and its two
 failure modes are both silent:

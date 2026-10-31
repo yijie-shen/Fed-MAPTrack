@@ -1,6 +1,6 @@
 """The federated server: round loop, aggregation, logging, checkpoint export.
 
-    D:\\Conda\\envs\\sdstrack\\python.exe lib/federated/server.py --variant ours --rounds 4 --dry-run
+    python lib/federated/server.py --variant ours --rounds 4 --dry-run
 
 What this file is responsible for
 ---------------------------------
