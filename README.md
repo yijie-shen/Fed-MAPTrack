@@ -16,8 +16,10 @@ in the aggregation domain that fits its role:
 This repository also contains the federated baselines used in the paper's comparison, so that every row can be rerun
 from one code base.
 
-> This is a research code base, forked from ViPT (MIT licence, see `LICENSE`). The original ViPT README is kept in
-> `README_ViPT.md`. The federated layer lives in `lib/federated/`.
+> This is a research code base, forked from [ViPT](https://github.com/jiawen-zhu/ViPT) (MIT licence, see `LICENSE`).
+> Only what the federated experiments need is kept: the tracker model, ViPT's data loading and loss, the federated layer
+> in `lib/federated/`, and the scripts that evaluate the trained checkpoints. ViPT's own centralised training scripts,
+> demo material and other benchmarks' tooling were removed; use the ViPT repository for those.
 
 ## What is where
 
@@ -31,6 +33,7 @@ from one code base.
 | `lib/federated/test_*.py` | unit tests (plain scripts, no pytest needed) |
 | `configs/fed/client_splits/` | the client partition used in the paper (`..._seed42_v2.json`) |
 | `scripts/eval/` | evaluation helpers (LasHeR scorer, VisEvent scorer) |
+| `scripts/supp/` | builds the DepthTrack-only partitions of the sensitivity / centralised-reference runs |
 | `docs/` | how the two newest baselines are adapted, and how this tree was merged from the development branches |
 | `experiments/vipt/` | ViPT configs; `deep_*_prime.yaml` are the configs for FED-PRIME checkpoints |
 
@@ -60,7 +63,9 @@ is listed in `docs/NEW_BASELINES.md`.
 ## Setup
 
 1. Install the ViPT environment (`install_vipt.sh`, PyTorch 2.5.1 / CUDA 12.4 was used).
-2. Download the pretrained tracker `OSTrack_ep0300.pth.tar` as described in `README_ViPT.md` and put it in `pretrained/`.
+2. Download the pretrained foundation tracker (OSTrack, file `OSTrack_ep0300.pth.tar`) from the
+   [ViPT release folder](https://drive.google.com/drive/folders/1ttafo0O5S9DXK2PX0YqPvPrQ-HWJjhSy?usp=sharing)
+   and put it in `pretrained/`.
 3. Download LasHeR, DepthTrack and VisEvent yourself (this repository ships no data) and point the code at them:
 
    ```
@@ -80,11 +85,29 @@ python lib/federated/server.py --variant modality --bucket-groups aux_specific,f
     --clients-per-round 1.0 --save-every 20 --export-at-end --seed 42 --out-dir output/fed/fed_maptrack_s42
 ```
 
-`--dry-run` prints the round plan without training. A 120-round run (12 clients, 50 local steps) takes about 17-20 hours
+`--dry-run` prints the round plan without training. An interrupted run continues bit-for-bit from its newest
+`fed_state_rXXXX.pt` with `--resume <that file> --out-dir <the same directory>` (saved every `--save-every` rounds). A 120-round run (12 clients, 50 local steps) takes about 17-20 hours
 on one RTX 4080 SUPER / 4090.
 
 Personalised baselines (Local, FedPer, Ditto, FedMSplit-P, FED-PRIME) export one checkpoint per sensor client
 (`ViPTrack_<client>_ep0120.pth.tar`); the other methods export one checkpoint per modality.
+
+## Partition sensitivity and centralised reference (DepthTrack only)
+
+`configs/fed/client_splits/depthtrack_only_alpha{0.1,0.5,1.0}_seed42.json` hold the four DepthTrack clients (three depth
+sensors and one RGB-only client) under different Dirichlet concentrations `alpha` of the sequence partition (small
+`alpha` = more skewed quantities); `depthtrack_only_centralized_seed42.json` has one client with all 146 training sequences.
+`python scripts/supp/build_supp_splits.py` regenerates them (it builds the full twelve-client split first, because the three
+datasets share one random stream). Runs use the same protocol as above (120 rounds, seed 42):
+
+```
+python lib/federated/server.py --split configs/fed/client_splits/depthtrack_only_alpha0.1_seed42.json --variant fedavg \
+    --local-steps 50 --rounds 120 --clients-per-round 1.0 --workers 0 --seed 42 --save-every 10 --export-at-end --out-dir output/fed/sens_fa_a0.1
+python lib/federated/server.py --split configs/fed/client_splits/depthtrack_only_alpha0.1_seed42.json --variant modality \
+    --bucket-groups aux_specific,fusion,norm --selective-participation --local-steps 50 ... (same remaining arguments)
+python lib/federated/server.py --split configs/fed/client_splits/depthtrack_only_centralized_seed42.json --variant fedavg \
+    --local-steps 200 ... (one client, 120 x 200 = 24,000 steps, the same total number of steps as the four-client federation)
+```
 
 ## Evaluate
 

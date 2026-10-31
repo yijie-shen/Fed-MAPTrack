@@ -1,7 +1,7 @@
 # Provenance of this code base
 
-The federated layer was developed on separate branches, each producing the results of one group of Table 1 rows. This branch
-(`release`) merges them so that every row can be rerun from one tree:
+The federated layer was developed on separate branches, each producing the results of one group of Table 1 rows. This tree
+merges them so that every row can be rerun from one code base:
 
 | merged branch | adds |
 |---|---|
@@ -11,6 +11,12 @@ The federated layer was developed on separate branches, each producing the resul
 | `ditto` (7611cb7) | `--variant ditto` |
 | `newbaselines` (0c7a27e) | `--variant fedmsplit_p`, `--variant fedprime`, FED-PRIME token pools in the backbone |
 | `newbaselines_eval` | evaluation harness (offline DepthTrack runner, evaluation configs, repository-relative paths) |
+| `supp_experiments` | `--resume`, the DepthTrack-only partitions (alpha 0.1 / 0.5 / 1.0) and the centralised reference split |
+
+The last step removed everything the federated experiments do not use (ViPT's centralised training scripts and trainers, demo
+images, other benchmarks' workspaces and tooling, development-only configs). Files that the training and evaluation entry
+points import or open were found by tracing real runs, not by guessing; the two-round state of every checked variant is
+bit-identical before and after the removal.
 
 ## Equivalence check of the merge
 

@@ -383,7 +383,7 @@ class FederatedClient:
 
 
 def _build_objective(cfg):
-    """The official loss set, copied from lib/train/train_script.py:71-73.
+    """The official ViPT loss set (GIoU, L1, focal; the weights come from the config).
 
     `cls` is unused while TRAIN_CLS is False, but it is in the official dict and
     costs nothing to carry -- leaving it out would be a silent divergence the
