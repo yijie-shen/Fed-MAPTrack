@@ -5,14 +5,15 @@ Dirichlet concentration of the sequence partition (smaller = more skewed). One t
 
 | Method | alpha = 0.1 | alpha = 0.5 | alpha = 1.0 |
 |---|---|---|---|
-| FedAvg | 53.81 | 54.02 (a) / 56.83 (b) | 57.38 |
+| FedAvg | 53.81 | 56.83 (a) | 57.38 |
 | Fed-MAPTrack | 54.93 | 55.47 | 53.86 |
 | Centralised reference (one client, all 146 training sequences, same total number of steps) | 57.40 | | |
 
-(a) the independent-FL run from the main comparison (equivalent to FedAvg in a single-modality federation), trained on an
-RTX 4090. (b) the same configuration rerun on the RTX 4080 SUPER that trained all other cells of this table. The two differ
-by 2.81 points for the same configuration, more than the three-seed standard deviations above (0.5-1.4), so differences of
-about three points or less in this single-seed table should not be interpreted. The share of RGB-only data in the
+(a) All cells of this table were trained and evaluated on the same RTX 4080 SUPER. An earlier run of the same configuration
+(the independent-FL run of the main comparison, which is equivalent to FedAvg in a single-modality federation) was trained
+on an RTX 4090 and scored 54.02. The two differ by 2.81 points for the same configuration, more than the three-seed
+standard deviations of the main tables (0.5-1.4), so differences of about three points or less in this single-run table
+should not be interpreted. The share of RGB-only data in the
 four-client federation changes with alpha (0.5%, 3.0% and 38.5% of the frames for alpha = 0.1, 0.5 and 1.0).
 
 ## How the runs were made

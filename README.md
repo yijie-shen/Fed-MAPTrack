@@ -48,8 +48,18 @@ Ablation of the aggregation design (same protocol; RGB-shared parameters are glo
 | Extended bucketing without selective participation | ✓ | ✓ | | 43.70 ± 0.95 | 54.21 ± 0.27 | 55.31 ± 0.57 |
 | **Fed-MAPTrack** | ✓ | ✓ | ✓ | **48.90 ± 0.63** | 56.38 ± 0.41 | 55.96 ± 0.50 |
 
+DepthTrack F-score (%) under different client partitions: a federation of the three RGB-D clients and the RGB-only client,
+with the sequence partition drawn from Dirichlet(alpha) (smaller alpha = more skewed). Individual training runs (seed 42).
+
+| Method | alpha = 0.1 | alpha = 0.5 | alpha = 1.0 |
+|---|---|---|---|
+| FedAvg | 53.81 | 56.83 | 57.38 |
+| Fed-MAPTrack aggregation | 54.93 | 55.47 | 53.86 |
+| RGB-only frames (%) | 0.5 | 3.0 | 38.5 |
+| Centralized reference | 57.40 | | |
+
 FedMSplit-P and FED-PRIME are adapted from image-text classification to this tracker, see
-[`docs/NEW_BASELINES.md`](docs/NEW_BASELINES.md). Additional DepthTrack-only runs are in
+[`docs/NEW_BASELINES.md`](docs/NEW_BASELINES.md); how the DepthTrack-only runs were made is in
 [`docs/EXTRA_RESULTS.md`](docs/EXTRA_RESULTS.md).
 
 ## Installation
