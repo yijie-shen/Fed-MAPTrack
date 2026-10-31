@@ -1,6 +1,6 @@
 # Fed-MAPTrack
 
-**Federated RGB-X Tracking with Group-Specific Prompt Aggregation**
+**Fed-MAPTrack: Federated Modality-aware Prompt Tuning for RGB-X Tracking**
 
 Paper: link will be added after publication.
 
