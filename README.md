@@ -2,7 +2,7 @@
 
 **Fed-MAPTrack: Federated Modality-aware Prompt Tuning for RGB-X Tracking**
 
-Paper: link will be added after publication.
+Paper: [arXiv:2610.34939](https://arxiv.org/abs/2610.34939).
 
 ## Method
 
@@ -114,11 +114,21 @@ Details (including the configs for FED-PRIME checkpoints) are in [`docs/USAGE.md
 
 ## Citation
 
-The BibTeX entry will be added after publication.
+If you find this work useful, please cite:
+
+```bibtex
+@article{liu2026fed,
+  title={Fed-MAPTrack: Federated Modality-aware Prompt Tuning for RGB-X Tracking},
+  author={Liu, Xiangyu and Shen, Yijie and Yin, Yue and Yin, Zhitong and Pan, Yongqi and Fan, Wentao},
+  journal={arXiv preprint arXiv:2610.34939},
+  year={2026}
+}
+```
 
 ## Acknowledgments
 
 - This code base is built on [ViPT](https://github.com/jiawen-zhu/ViPT) and [OSTrack](https://github.com/botaoye/OSTrack).
+  We thank their authors for making their code publicly available.
 - FedMSplit-P and FED-PRIME follow Phung et al., *Federated Prompt-Tuning with Heterogeneous and Incomplete Multimodal
   Client Data* (ICCV 2025) and Chen and Zhang, *FedMSplit* (KDD 2022).
 
